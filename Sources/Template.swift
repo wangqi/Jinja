@@ -15,7 +15,7 @@ public struct Template {
         self.parsed = try parse(tokens: tokens)
     }
 
-    public func render(_ items: [String: Any]) throws -> String {
+    public func render(_ items: [String: Any?]) throws -> String {
         let env = Environment()
 
         try env.set(name: "false", value: false)
@@ -30,7 +30,9 @@ public struct Template {
         try env.set(name: "range", value: range)
 
         for (key, value) in items {
-            try env.set(name: key, value: value)
+            if let value {
+                try env.set(name: key, value: value)
+            }
         }
 
         let interpreter = Interpreter(env: env)
