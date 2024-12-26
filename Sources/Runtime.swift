@@ -88,15 +88,12 @@ struct ObjectValue: RuntimeValue {
                 if let key = args[0] as? StringValue {
                     if let value = value.first(where: { $0.0 == key.value }) {
                         return value as! (any RuntimeValue)
-                    }
-                    else if args.count > 1 {
+                    } else if args.count > 1 {
                         return args[1]
-                    }
-                    else {
+                    } else {
                         return NullValue()
                     }
-                }
-                else {
+                } else {
                     throw JinjaError.runtime("Object key must be a string: got \(type(of:args[0]))")
                 }
             }),
@@ -182,8 +179,7 @@ struct Interpreter {
             if !(lastEvaluated is NullValue), !(lastEvaluated is UndefinedValue) {
                 if let value = lastEvaluated.value as? String {
                     result += value
-                }
-                else {
+                } else {
                     switch lastEvaluated.value {
                     case let value as Int:
                         result += String(value)
@@ -208,23 +204,19 @@ struct Interpreter {
         if let identifier = node.assignee as? Identifier {
             let variableName = identifier.value
             try environment.setVariable(name: variableName, value: rhs)
-        }
-        else if let member = node.assignee as? MemberExpression {
+        } else if let member = node.assignee as? MemberExpression {
             let object = try self.evaluate(statement: member.object, environment: environment)
 
             if var object = object as? ObjectValue {
                 if let property = member.property as? Identifier {
                     object.value[property.value] = rhs
-                }
-                else {
+                } else {
                     throw JinjaError.runtime("Cannot assign to member with non-identifier property")
                 }
-            }
-            else {
+            } else {
                 throw JinjaError.runtime("Cannot assign to member of non-object")
             }
-        }
-        else {
+        } else {
             throw JinjaError.runtime("Invalid assignee type: \(type(of: node.assignee))")
         }
 
@@ -266,8 +258,7 @@ struct Interpreter {
 
                 if let identifier = node.loopvar as? Identifier {
                     try scope.setVariable(name: identifier.value, value: current)
-                }
-                else {
+                } else {
                 }
 
                 switch node.loopvar {
@@ -284,15 +275,13 @@ struct Interpreter {
                         for j in 0 ..< tupleLiteral.value.count {
                             if let identifier = tupleLiteral.value[j] as? Identifier {
                                 try scope.setVariable(name: identifier.value, value: current.value[j])
-                            }
-                            else {
+                            } else {
                                 throw JinjaError.runtime(
                                     "Cannot unpack non-identifier type: \(type(of:tupleLiteral.value[j]))"
                                 )
                             }
                         }
-                    }
-                    else {
+                    } else {
                         throw JinjaError.runtime("Cannot unpack non-iterable type: \(type(of:current))")
                     }
                 default:
@@ -302,8 +291,7 @@ struct Interpreter {
                 let evaluated = try self.evaluateBlock(statements: node.body, environment: scope)
                 result += evaluated.value
             }
-        }
-        else {
+        } else {
             throw JinjaError.runtime("Expected iterable type in for loop: got \(type(of:iterable))")
         }
 
@@ -315,8 +303,7 @@ struct Interpreter {
 
         if node.operation.value == "and" {
             return left.bool() ? try self.evaluate(statement: node.right, environment: environment) : left
-        }
-        else if node.operation.value == "or" {
+        } else if node.operation.value == "or" {
             return left.bool() ? left : try self.evaluate(statement: node.right, environment: environment)
         }
 
@@ -335,23 +322,19 @@ struct Interpreter {
                     "Unknown left value type:\(type(of: left.value)), right value type:\(type(of: right.value))"
                 )
             }
-        }
-        else if node.operation.value == "!=" {
+        } else if node.operation.value == "!=" {
             if type(of: left) != type(of: right) {
                 return BooleanValue(value: true)
-            }
-            else {
+            } else {
                 return BooleanValue(value: left.value as! AnyHashable != right.value as! AnyHashable)
             }
         }
 
         if left is UndefinedValue || right is UndefinedValue {
             throw JinjaError.runtime("Cannot perform operation on undefined values")
-        }
-        else if left is NullValue || right is NullValue {
+        } else if left is NullValue || right is NullValue {
             throw JinjaError.runtime("Cannot perform operation on null values")
-        }
-        else if let left = left as? NumericValue, let right = right as? NumericValue {
+        } else if let left = left as? NumericValue, let right = right as? NumericValue {
             switch node.operation.value {
             case "+": throw JinjaError.syntaxNotSupported("+")
             case "-": throw JinjaError.syntaxNotSupported("-")
@@ -371,15 +354,13 @@ struct Interpreter {
             default:
                 throw JinjaError.runtime("Unknown operation type:\(node.operation.value)")
             }
-        }
-        else if left is ArrayValue && right is ArrayValue {
+        } else if left is ArrayValue && right is ArrayValue {
             switch node.operation.value {
             case "+": break
             default:
                 throw JinjaError.runtime("Unknown operation type:\(node.operation.value)")
             }
-        }
-        else if right is ArrayValue {
+        } else if right is ArrayValue {
             throw JinjaError.syntaxNotSupported("right is ArrayValue")
         }
 
@@ -487,8 +468,7 @@ struct Interpreter {
                     step: step.value as? Int
                 )
             )
-        }
-        else if let object = object as? StringValue {
+        } else if let object = object as? StringValue {
             return StringValue(
                 value: slice(
                     Array(arrayLiteral: object.value),
@@ -509,12 +489,10 @@ struct Interpreter {
         if expr.computed {
             if let property = expr.property as? SliceExpression {
                 return try self.evaluateSliceExpression(object: object, expr: property, environment: environment)
-            }
-            else {
+            } else {
                 property = try self.evaluate(statement: expr.property, environment: environment)
             }
-        }
-        else {
+        } else {
             property = StringValue(value: (expr.property as! Identifier).value)
         }
 
@@ -522,49 +500,40 @@ struct Interpreter {
         if let object = object as? ObjectValue {
             if let property = property as? StringValue {
                 value = object.value[property.value] ?? object.builtins[property.value]
-            }
-            else {
+            } else {
                 throw JinjaError.runtime("Cannot access property with non-string: got \(type(of:property))")
             }
-        }
-        else if object is ArrayValue || object is StringValue {
+        } else if object is ArrayValue || object is StringValue {
             if let property = property as? NumericValue {
                 if let object = object as? ArrayValue {
                     let index = property.value as! Int
                     if index >= 0 {
                         value = object.value[index]
-                    }
-                    else {
+                    } else {
                         value = object.value[object.value.count + index]
                     }
-                }
-                else if let object = object as? StringValue {
+                } else if let object = object as? StringValue {
                     let index = object.value.index(object.value.startIndex, offsetBy: property.value as! Int)
                     value = StringValue(value: String(object.value[index]))
                 }
-            }
-            else if let property = property as? StringValue {
+            } else if let property = property as? StringValue {
                 value = object.builtins[property.value]
-            }
-            else {
+            } else {
                 throw JinjaError.runtime(
                     "Cannot access property with non-string/non-number: got \(type(of:property))"
                 )
             }
-        }
-        else {
+        } else {
             if let property = property as? StringValue {
                 value = object.builtins[property.value]!
-            }
-            else {
+            } else {
                 throw JinjaError.runtime("Cannot access property with non-string: got \(type(of:property))")
             }
         }
 
         if let value {
             return value
-        }
-        else {
+        } else {
             return UndefinedValue()
         }
     }
@@ -587,8 +556,7 @@ struct Interpreter {
         for argument in expr.args {
             if let argument = argument as? KeywordArgumentExpression {
                 kwargs[argument.key.value] = try self.evaluate(statement: argument.value, environment: environment)
-            }
-            else {
+            } else {
                 try args.append(self.evaluate(statement: argument, environment: environment))
             }
         }
@@ -601,8 +569,7 @@ struct Interpreter {
 
         if let fn = fn as? FunctionValue {
             return try fn.value(args, environment)
-        }
-        else {
+        } else {
             throw JinjaError.runtime("Cannot call something that is not a function: got \(type(of:fn))")
         }
     }
@@ -628,8 +595,7 @@ struct Interpreter {
                 default:
                     throw JinjaError.runtime("Unknown ArrayValue filter: \(identifier.value)")
                 }
-            }
-            else if let stringValue = operand as? StringValue {
+            } else if let stringValue = operand as? StringValue {
                 switch identifier.value {
                 case "length":
                     return NumericValue(value: stringValue.value.count)
@@ -646,16 +612,14 @@ struct Interpreter {
                 default:
                     throw JinjaError.runtime("Unknown StringValue filter: \(identifier.value)")
                 }
-            }
-            else if let numericValue = operand as? NumericValue {
+            } else if let numericValue = operand as? NumericValue {
                 switch identifier.value {
                 case "abs":
                     return NumericValue(value: abs(numericValue.value as! Int32))
                 default:
                     throw JinjaError.runtime("Unknown NumericValue filter: \(identifier.value)")
                 }
-            }
-            else if let objectValue = operand as? ObjectValue {
+            } else if let objectValue = operand as? ObjectValue {
                 switch identifier.value {
                 case "items":
                     var items: [ArrayValue] = []
@@ -687,8 +651,7 @@ struct Interpreter {
         if let testFunction = environment.tests[node.test.value] {
             let result = try testFunction(operand)
             return BooleanValue(value: node.negate ? !result : result)
-        }
-        else {
+        } else {
             throw JinjaError.runtime("Unknown test: \(node.test.value)")
         }
     }
@@ -731,8 +694,7 @@ struct Interpreter {
                     "Unknown node type: \(type(of:statement)), statement: \(String(describing: statement))"
                 )
             }
-        }
-        else {
+        } else {
             return UndefinedValue()
         }
     }
