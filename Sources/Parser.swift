@@ -34,8 +34,7 @@ func parse(tokens: [Token]) throws -> Program {
                 if let identifier = argument as? Identifier {
                     let value = try parseExpression()
                     argument = KeywordArgumentExpression(key: identifier, value: value as! Expression)
-                }
-                else {
+                } else {
                     throw JinjaError.syntax("Expected identifier for keyword argument")
                 }
             }
@@ -89,8 +88,7 @@ func parse(tokens: [Token]) throws -> Program {
                 slices.append(nil)
                 current += 1
                 isSlice = true
-            }
-            else {
+            } else {
                 try slices.append(parseExpression())
                 if typeof(.colon) {
                     current += 1
@@ -131,8 +129,7 @@ func parse(tokens: [Token]) throws -> Program {
             if computed {
                 property = try parseMemberExpressionArgumentsList()
                 try expect(type: .closeSquareBracket, error: "Expected closing square bracket")
-            }
-            else {
+            } else {
                 property = try parsePrimaryExpression()
                 if !(property is Identifier) {
                     throw JinjaError.syntax("Expected identifier following dot operator")
@@ -252,8 +249,7 @@ func parse(tokens: [Token]) throws -> Program {
 
         if let right {
             return right
-        }
-        else {
+        } else {
             return try parseComparisonExpression()
         }
     }
@@ -345,8 +341,7 @@ func parse(tokens: [Token]) throws -> Program {
             if typeof(.elseIf) {
                 try expect(type: .elseIf, error: "Expected elseif token")
                 try alternate.append(parseIfStatement())
-            }
-            else {
+            } else {
                 try expect(type: .else, error: "Expected else token")
                 try expect(type: .closeStatement, error: "Expected closing statement token")
 

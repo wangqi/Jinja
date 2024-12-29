@@ -279,8 +279,7 @@ func tokenize(_ source: String, options: PreprocessOptions = PreprocessOptions()
             if type == .in, tokens.last?.type == .not {
                 _ = tokens.popLast()
                 tokens.append(Token(value: "not in", type: .notIn))
-            }
-            else {
+            } else {
                 tokens.append(Token(value: word, type: type))
             }
 
