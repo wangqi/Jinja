@@ -505,10 +505,10 @@ func parse(tokens: [Token]) throws -> Program {
         try expect(type: .in, error: "Expected `in` keyword following loop variable")
         let iterable = try parseExpression()
         // Handle optional if condition for filtering
-        var ifCondition: Expression? = nil
+        var test: Expression? = nil
         if typeof(.if) {
             current += 1  // consume if token
-            ifCondition = try parseExpression()
+            test = try parseExpression()
         }
         try expect(type: .closeStatement, error: "Expected closing statement token")
         var body: [Statement] = []
@@ -530,7 +530,7 @@ func parse(tokens: [Token]) throws -> Program {
             iterable: iterable,
             body: body,
             defaultBlock: defaultBlock,
-            ifCondition: ifCondition
+            test: test
         )
     }
 

@@ -67,7 +67,7 @@ struct For: Statement {
     var iterable: Expression
     var body: [Statement]
     var defaultBlock: [Statement]
-    var ifCondition: Expression?
+    var test: Expression?
 }
 
 struct MemberExpression: Expression {

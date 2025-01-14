@@ -321,7 +321,7 @@ struct Interpreter {
                     throw JinjaError.runtime("Invalid loop variable(s): \(type(of: node.loopvar))")
                 }
                 // Evaluate the test before adding the item
-                if let test = test {
+                if let test {
                     try scopeUpdateFunction(loopScope)
                     let testValue = try self.evaluate(statement: test, environment: loopScope)
                     if !testValue.bool() {
