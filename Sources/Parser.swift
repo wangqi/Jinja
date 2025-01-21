@@ -55,13 +55,22 @@ func parse(tokens: [Token]) throws -> Program {
         try StringLiteral(value: expect(type: .text, error: "Expected text token").value)
     }
 
-    func parseCallExpression(callee: Expression) throws -> CallExpression {
+    func parseCallExpression(callee: Expression) throws -> Expression {
         let args = try parseArgs()
-        var callExpression = CallExpression(callee: callee, args: args)
-        if typeof(.openParen) {
-            callExpression = try parseCallExpression(callee: callExpression)
+        var expression: Expression = CallExpression(callee: callee, args: args)
+        // Handle potential array indexing after method call
+        if typeof(.openSquareBracket) {
+            expression = MemberExpression(
+                object: expression,
+                property: try parseMemberExpressionArgumentsList(),
+                computed: true
+            )
         }
-        return callExpression
+        // Handle potential chained method calls
+        if typeof(.openParen) {
+            expression = try parseCallExpression(callee: expression)
+        }
+        return expression
     }
 
     func parseMemberExpressionArgumentsList() throws -> Expression {
@@ -73,7 +82,19 @@ func parse(tokens: [Token]) throws -> Program {
                 current += 1  // consume colon
                 isSlice = true
             } else {
-                slices.append(try parseExpression())
+                // Handle negative numbers as indices
+                if typeof(.additiveBinaryOperator) && tokens[current].value == "-" {
+                    current += 1  // consume the minus sign
+                    if typeof(.numericLiteral) {
+                        let num = tokens[current].value
+                        current += 1
+                        slices.append(NumericLiteral(value: -Int(num)!))
+                    } else {
+                        throw JinjaError.syntax("Expected number after minus sign in array index")
+                    }
+                } else {
+                    slices.append(try parseExpression())
+                }
                 if typeof(.colon) {
                     current += 1  // consume colon
                     isSlice = true
@@ -110,6 +131,23 @@ func parse(tokens: [Token]) throws -> Program {
                 property = try parsePrimaryExpression()
                 if !(property is Identifier) {
                     throw JinjaError.syntax("Expected identifier following dot operator")
+                }
+                // Handle method calls
+                if typeof(.openParen) {
+                    let methodCall = CallExpression(
+                        callee: MemberExpression(object: object, property: property, computed: false),
+                        args: try parseArgs()
+                    )
+                    // Handle array indexing after method call
+                    if typeof(.openSquareBracket) {
+                        current += 1  // consume [
+                        let index = try parseExpression()
+                        try expect(type: .closeSquareBracket, error: "Expected closing square bracket")
+                        object = MemberExpression(object: methodCall, property: index, computed: true)
+                        continue
+                    }
+                    object = methodCall
+                    continue
                 }
             }
             object = MemberExpression(
@@ -364,12 +402,14 @@ func parse(tokens: [Token]) throws -> Program {
     func parseSetStatement() throws -> Statement {
         let left = try parseExpression()
         if typeof(.equals) {
-            current += 1
+            current += 1  // consume equals
             // Parse the right-hand side as an expression
             let value = try parseExpression()
-            // Explicitly cast 'value' to 'Expression'
+            try expect(type: .closeStatement, error: "Expected closing statement token")
             return Set(assignee: left, value: value)
         }
+        // If there's no equals sign, treat it as an expression statement
+        try expect(type: .closeStatement, error: "Expected closing statement token")
         return left
     }
 
@@ -552,11 +592,11 @@ func parse(tokens: [Token]) throws -> Program {
         // Consume {% %} tokens
         try expect(type: .openStatement, error: "Expected opening statement token")
         var result: Statement
+
         switch tokens[current].type {
         case .set:
             current += 1  // consume 'set' token
             result = try parseSetStatement()
-            try expect(type: .closeStatement, error: "Expected closing statement token")
         case .if:
             current += 1  // consume 'if' token
             result = try parseIfStatement()
@@ -576,8 +616,11 @@ func parse(tokens: [Token]) throws -> Program {
             try expect(type: .endFor, error: "Expected endfor token")
             try expect(type: .closeStatement, error: "Expected %} token")
         default:
-            throw JinjaError.syntax("Unknown statement type: \(tokens[current].type)")
+            // Handle expressions within statements
+            result = try parseExpression()
+            try expect(type: .closeStatement, error: "Expected closing statement token")
         }
+
         return result
     }
 

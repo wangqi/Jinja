@@ -850,10 +850,9 @@ struct Interpreter {
         } else if let object = object as? ArrayValue {
             if let property = property as? NumericValue {
                 if let index = property.value as? Int {
-                    if index >= 0 && index < object.value.count {
-                        value = object.value[index]
-                    } else if index < 0 && index >= -object.value.count {
-                        value = object.value[object.value.count + index]
+                    let actualIndex = index < 0 ? object.value.count + index : index
+                    if actualIndex >= 0 && actualIndex < object.value.count {
+                        value = object.value[actualIndex]
                     } else {
                         value = UndefinedValue()
                     }
