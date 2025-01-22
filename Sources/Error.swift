@@ -7,7 +7,7 @@
 
 import Foundation
 
-enum JinjaError: Error, LocalizedError {
+enum JinjaError: Error, LocalizedError, Equatable {
     case syntax(String)
     case parser(String)
     case runtime(String)
@@ -22,5 +22,9 @@ enum JinjaError: Error, LocalizedError {
         case .todo(let message): return "Todo error: \(message)"
         case .syntaxNotSupported(let string): return "Syntax not supported: \(string)"
         }
+    }
+
+    var id: String {
+        errorDescription ?? ""
     }
 }
