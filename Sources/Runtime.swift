@@ -90,7 +90,7 @@ struct TupleValue: RuntimeValue {
     }
 }
 
-struct ObjectValue: RuntimeValue, Sequence {
+class ObjectValue: RuntimeValue, Sequence {
     var storage: OrderedDictionary<String, any RuntimeValue>
     var builtins: [String: any RuntimeValue]
 
@@ -139,7 +139,7 @@ struct ObjectValue: RuntimeValue, Sequence {
         ]
     }
 
-    mutating func setValue(key: String, value: any RuntimeValue) {
+    func setValue(key: String, value: any RuntimeValue) {
         storage[key] = value
     }
 

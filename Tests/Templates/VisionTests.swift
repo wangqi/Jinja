@@ -80,8 +80,14 @@ final class VisionTests: XCTestCase {
             "bos_token": "<s>" as Any,
             "add_generation_prompt": true as Any,
         ])
-        let target =
-            "<s>\n<|start_header_id|>system<|end_header_id|>\n\nCutting Knowledge Date: December 2023\nToday Date: 26 Jul 2024\n\n<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nWhat's in this image?<|image|><|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+        let target = """
+            <s>
+            <|start_header_id|>user<|end_header_id|>
+
+            What's in this image?<|image|><|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+
+            """
         XCTAssertEqual(result, target)
     }
 
