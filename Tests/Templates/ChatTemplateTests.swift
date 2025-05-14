@@ -659,4 +659,48 @@ final class ChatTemplateTests: XCTestCase {
             """
         XCTAssertEqual(result, target)
     }
+
+    func testGraniteWithoutThinking() throws {
+        let userMessage = [
+            "role": "user",
+            "content": "What is 1+1?",
+        ]
+        let template = try Template(ChatTemplate.granite3_3)
+        let result = try template.render([
+            "messages": [userMessage],
+            "bos_token": "<|begin_of_text|>",
+            "add_generation_prompt": true,
+        ])
+        let target = """
+            <|start_of_role|>system<|end_of_role|>Knowledge Cutoff Date: April 2024.
+            Today's Date: \(Environment.formatDate(Date(), withFormat: "%B %d, %Y")).
+            You are Granite, developed by IBM. You are a helpful AI assistant.<|end_of_text|>
+            <|start_of_role|>user<|end_of_role|>What is 1+1?<|end_of_text|>
+            <|start_of_role|>assistant<|end_of_role|>
+            """
+        XCTAssertEqual(result, target)
+    }
+
+    func testGraniteWithThinking() throws {
+        let userMessage = [
+            "role": "user",
+            "content": "What is 1+1?",
+        ]
+        let template = try Template(ChatTemplate.granite3_3)
+        let result = try template.render([
+            "messages": [userMessage],
+            "bos_token": "<|begin_of_text|>",
+            "add_generation_prompt": true,
+            "thinking": true,
+        ])
+        let target = """
+            <|start_of_role|>system<|end_of_role|>Knowledge Cutoff Date: April 2024.
+            Today's Date: \(Environment.formatDate(Date(), withFormat: "%B %d, %Y")).
+            You are Granite, developed by IBM. You are a helpful AI assistant.
+            Respond to every user query in a comprehensive and detailed way. You can write down your thoughts and reasoning process before responding. In the thought process, engage in a comprehensive cycle of analysis, summarization, exploration, reassessment, reflection, backtracing, and iteration to develop well-considered thinking process. In the response section, based on various attempts, explorations, and reflections from the thoughts section, systematically present the final solution that you deem correct. The response should summarize the thought process. Write your thoughts between <think></think> and write your response between <response></response> for each user query.<|end_of_text|>
+            <|start_of_role|>user<|end_of_role|>What is 1+1?<|end_of_text|>
+            <|start_of_role|>assistant<|end_of_role|>
+            """
+        XCTAssertEqual(result, target)
+    }
 }
