@@ -620,7 +620,7 @@ final class ChatTemplateTests: XCTestCase {
         XCTAssertEqual(result, target)
     }
 
-    func testDeepSeekR1WitihSystemPrompt() throws {
+    func testDeepSeekR1WithSystemPrompt() throws {
         let userMessage = [
             "role": "user",
             "content": "What is the weather in Paris today?",
@@ -700,6 +700,114 @@ final class ChatTemplateTests: XCTestCase {
             Respond to every user query in a comprehensive and detailed way. You can write down your thoughts and reasoning process before responding. In the thought process, engage in a comprehensive cycle of analysis, summarization, exploration, reassessment, reflection, backtracing, and iteration to develop well-considered thinking process. In the response section, based on various attempts, explorations, and reflections from the thoughts section, systematically present the final solution that you deem correct. The response should summarize the thought process. Write your thoughts between <think></think> and write your response between <response></response> for each user query.<|end_of_text|>
             <|start_of_role|>user<|end_of_role|>What is 1+1?<|end_of_text|>
             <|start_of_role|>assistant<|end_of_role|>
+            """
+        XCTAssertEqual(result, target)
+    }
+
+    func testSmolLM3() throws {
+        let userMessage = [
+            "role": "user",
+            "content": "What is the weather in Paris today?",
+        ]
+        let template = try Template(ChatTemplate.smollm3)
+        let result = try template.render([
+            "messages": [userMessage],
+            "add_generation_prompt": true,
+        ])
+        let target = """
+            <|im_start|>system
+            ## Metadata
+
+            Knowledge Cutoff Date: June 2025
+            Today Date: \(Environment.formatDate(Date(), withFormat: "%d %B %Y"))
+            Reasoning Mode: /think
+
+            ## Custom Instructions
+
+            You are a helpful AI assistant named SmolLM, trained by Hugging Face. Your role as an assistant involves thoroughly exploring questions through a systematic thinking process before providing the final precise and accurate solutions. This requires engaging in a comprehensive cycle of analysis, summarizing, exploration, reassessment, reflection, backtracking, and iteration to develop well-considered thinking process. Please structure your response into two main sections: Thought and Solution using the specified format: <think> Thought section </think> Solution section. In the Thought section, detail your reasoning process in steps. Each step should include detailed considerations such as analysing questions, summarizing relevant findings, brainstorming new ideas, verifying the accuracy of the current steps, refining any errors, and revisiting previous steps. In the Solution section, based on various attempts, explorations, and reflections from the Thought section, systematically present the final solution that you deem correct. The Solution section should be logical, accurate, and concise and detail necessary steps needed to reach the conclusion.
+
+            <|im_start|>user
+            What is the weather in Paris today?<|im_end|>
+            <|im_start|>assistant
+
+            """
+        XCTAssertEqual(result, target)
+    }
+
+    func testSmolLM3FromHF() throws {
+        let data = try? Data(
+            contentsOf: URL(string: "https://huggingface.co/HuggingFaceTB/SmolLM3-3B/raw/main/chat_template.jinja")!
+        )
+        let chatTemplate = String(data: data!, encoding: .utf8)
+        let userMessage = [
+            "role": "user",
+            "content": "What is the weather in Paris today?",
+        ]
+        let template = try Template(chatTemplate!)
+        let result = try template.render([
+            "messages": [userMessage],
+            "add_generation_prompt": true,
+        ])
+        let target = """
+            <|im_start|>system
+            ## Metadata
+
+            Knowledge Cutoff Date: June 2025
+            Today Date: \(Environment.formatDate(Date(), withFormat: "%d %B %Y"))
+            Reasoning Mode: /think
+
+            ## Custom Instructions
+
+            You are a helpful AI assistant named SmolLM, trained by Hugging Face. Your role as an assistant involves thoroughly exploring questions through a systematic thinking process before providing the final precise and accurate solutions. This requires engaging in a comprehensive cycle of analysis, summarizing, exploration, reassessment, reflection, backtracking, and iteration to develop well-considered thinking process. Please structure your response into two main sections: Thought and Solution using the specified format: <think> Thought section </think> Solution section. In the Thought section, detail your reasoning process in steps. Each step should include detailed considerations such as analysing questions, summarizing relevant findings, brainstorming new ideas, verifying the accuracy of the current steps, refining any errors, and revisiting previous steps. In the Solution section, based on various attempts, explorations, and reflections from the Thought section, systematically present the final solution that you deem correct. The Solution section should be logical, accurate, and concise and detail necessary steps needed to reach the conclusion.
+
+            <|im_start|>user
+            What is the weather in Paris today?<|im_end|>
+            <|im_start|>assistant
+
+            """
+        XCTAssertEqual(result, target)
+    }
+
+    func testSmolLM3WithSystemPrompt() throws {
+        let data = try? Data(
+            contentsOf: URL(string: "https://huggingface.co/HuggingFaceTB/SmolLM3-3B/raw/main/chat_template.jinja")!
+        )
+        let chatTemplate = String(data: data!, encoding: .utf8)
+        let systemMessage = [
+            "role": "system",
+            "content": "You are a assistant.",
+        ]
+        let userMessage = [
+            "role": "user",
+            "content": "What is the weather in Paris today?",
+        ]
+        let template = try Template(chatTemplate!)
+        let result = try template.render([
+            "messages": [
+                systemMessage,
+                userMessage,
+            ],
+            "add_generation_prompt": true,
+            "eos_token": "<|im_end|>",
+            "pad_token": "<|im_end|>",
+        ])
+
+        let target = """
+            <|im_start|>system
+            ## Metadata
+
+            Knowledge Cutoff Date: June 2025
+            Today Date: \(Environment.formatDate(Date(), withFormat: "%d %B %Y"))
+            Reasoning Mode: /think
+
+            ## Custom Instructions
+
+            You are a assistant.
+
+            <|im_start|>user
+            What is the weather in Paris today?<|im_end|>
+            <|im_start|>assistant
+
             """
         XCTAssertEqual(result, target)
     }

@@ -115,6 +115,7 @@ let orderedMappingTable: [(String, TokenType)] = [
     (">", .comparisonBinaryOperator),
     ("+", .additiveBinaryOperator),
     ("-", .additiveBinaryOperator),
+    ("~", .additiveBinaryOperator),
     ("*", .multiplicativeBinaryOperator),
     ("/", .multiplicativeBinaryOperator),
     ("%", .multiplicativeBinaryOperator),
