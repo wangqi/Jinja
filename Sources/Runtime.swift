@@ -553,9 +553,45 @@ struct Interpreter {
         return StringValue(value: result)
     }
 
+    private func arrayToString(_ array: ArrayValue) -> String {
+        // Convert array elements to their string representations
+        let stringElements = array.value.map { element -> String in
+            if let stringValue = element as? StringValue {
+                return stringValue.value
+            } else if let numericValue = element as? NumericValue {
+                return String(describing: numericValue.value)
+            } else if let booleanValue = element as? BooleanValue {
+                return String(booleanValue.value)
+            } else if let objectValue = element as? ObjectValue {
+                // For objects, create a cleaner JSON-like representation
+                let pairs = objectValue.value.map { key, value in
+                    let cleanValue: String
+                    if let stringVal = value as? StringValue {
+                        cleanValue = "\"\(stringVal.value)\""
+                    } else if let numVal = value as? NumericValue {
+                        cleanValue = String(describing: numVal.value)
+                    } else if let boolVal = value as? BooleanValue {
+                        cleanValue = String(boolVal.value)
+                    } else {
+                        cleanValue = String(describing: value)
+                    }
+                    return "\"\(key)\": \(cleanValue)"
+                }
+                return "{\(pairs.joined(separator: ", "))}"
+            } else if let nestedArrayValue = element as? ArrayValue {
+                // Recursively handle nested arrays
+                return arrayToString(nestedArrayValue)
+            } else {
+                return String(describing: element)
+            }
+        }
+        return "[\(stringElements.joined(separator: ", "))]"
+    }
+
     func evaluateBinaryExpression(node: BinaryExpression, environment: Environment) throws -> any RuntimeValue {
         let left = try self.evaluate(statement: node.left, environment: environment)
         let right = try self.evaluate(statement: node.right, environment: environment)
+        
         // Handle 'or'
         if node.operation.value == "or" {
             if left.bool() {
@@ -791,6 +827,15 @@ struct Interpreter {
                 return BooleanValue(value: member)
             case "not in":
                 return BooleanValue(value: !member)
+            case "+":
+                // Handle string + array concatenation 
+                if let leftString = left as? StringValue {
+                    // Convert array to a more useful string representation
+                    let arrayString = arrayToString(right)
+                    return StringValue(value: leftString.value + arrayString)
+                } else {
+                    throw JinjaError.runtime("Unsupported left operand type for + operation with ArrayValue")
+                }
             default:
                 throw JinjaError.runtime("Unknown operation type:\(node.operation.value)")
             }
@@ -807,6 +852,9 @@ struct Interpreter {
                     rightValue = String(rightBoolean.value)
                 } else if right is UndefinedValue || right is NullValue {
                     rightValue = ""
+                } else if let rightArray = right as? ArrayValue {
+                    // Convert array to string representation (similar to Python's str(array))
+                    rightValue = arrayToString(rightArray)
                 } else {
                     throw JinjaError.runtime("Unsupported right operand type for string concatenation")
                 }
@@ -858,6 +906,9 @@ struct Interpreter {
                     return StringValue(value: String(describing: leftNumeric.value) + right.value)
                 } else if let leftBoolean = left as? BooleanValue {
                     return StringValue(value: String(leftBoolean.value) + right.value)
+                } else if let leftArray = left as? ArrayValue {
+                    // Convert array to string representation (similar to Python's str(array))
+                    return StringValue(value: arrayToString(leftArray) + right.value)
                 } else {
                     throw JinjaError.runtime("Unsupported left operand type for string concatenation")
                 }
