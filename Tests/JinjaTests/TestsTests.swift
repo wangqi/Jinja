@@ -219,6 +219,18 @@ struct TestsTests {
         }
     }
 
+    @Test("even test with fractional numbers")
+    func evenWithFractionalNumbers() throws {
+        let result1 = try Tests.even([.double(4.5)], kwargs: [:], env: env)
+        #expect(result1 == false)
+
+        let result2 = try Tests.even([.double(3.7)], kwargs: [:], env: env)
+        #expect(result2 == false)
+
+        let result3 = try Tests.even([.double(0.1)], kwargs: [:], env: env)
+        #expect(result3 == false)
+    }
+
     @Test("odd test with odd integer")
     func oddWithOddInteger() throws {
         let result = try Tests.odd([.int(3)], kwargs: [:], env: env)
@@ -254,6 +266,18 @@ struct TestsTests {
         #expect(throws: JinjaError.self) {
             try Tests.odd([], kwargs: [:], env: env)
         }
+    }
+
+    @Test("odd test with fractional numbers")
+    func oddWithFractionalNumbers() throws {
+        let result1 = try Tests.odd([.double(4.5)], kwargs: [:], env: env)
+        #expect(result1 == false)
+
+        let result2 = try Tests.odd([.double(3.7)], kwargs: [:], env: env)
+        #expect(result2 == false)
+
+        let result3 = try Tests.odd([.double(0.1)], kwargs: [:], env: env)
+        #expect(result3 == false)
     }
 
     @Test("divisibleby test with divisible integers")

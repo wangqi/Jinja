@@ -137,7 +137,7 @@ public enum Tests {
         case let .int(num):
             return num % 2 == 0
         case let .double(num):
-            return Int(num) % 2 == 0
+            return num.isFinite && num.truncatingRemainder(dividingBy: 2.0) == 0.0
         default:
             return false
         }
@@ -160,7 +160,8 @@ public enum Tests {
         case let .int(num):
             return num % 2 != 0
         case let .double(num):
-            return Int(num) % 2 != 0
+            return num.isFinite && num.truncatingRemainder(dividingBy: 1.0) == 0.0
+                && num.truncatingRemainder(dividingBy: 2.0) != 0.0
         default:
             return false
         }
