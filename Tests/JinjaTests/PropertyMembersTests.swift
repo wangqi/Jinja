@@ -359,6 +359,38 @@ struct PropertyMembersTests {
         #expect(getResult == .string("answer"))
     }
 
+    @Test("Object keys method")
+    func objectKeys() throws {
+        let dict: OrderedDictionary<String, Value> = ["a": .int(1), "b": .int(2), "c": .int(3)]
+        let value = Value.object(dict)
+        let result = try PropertyMembers.evaluate(value, "keys")
+
+        guard case let .function(fn) = result else {
+            Issue.record("Expected function")
+            return
+        }
+
+        let keysResult = try fn([], [:], Environment())
+        let expected = Value.array([.string("a"), .string("b"), .string("c")])
+        #expect(keysResult == expected)
+    }
+
+    @Test("Object values method")
+    func objectValues() throws {
+        let dict: OrderedDictionary<String, Value> = ["a": .int(1), "b": .int(2), "c": .int(3)]
+        let value = Value.object(dict)
+        let result = try PropertyMembers.evaluate(value, "values")
+
+        guard case let .function(fn) = result else {
+            Issue.record("Expected function")
+            return
+        }
+
+        let valuesResult = try fn([], [:], Environment())
+        let expected = Value.array([.int(1), .int(2), .int(3)])
+        #expect(valuesResult == expected)
+    }
+
     @Test("Object direct property access")
     func objectDirectProperty() throws {
         let dict: OrderedDictionary<String, Value> = ["foo": .string("bar")]
