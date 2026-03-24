@@ -1068,7 +1068,8 @@ public enum Filters {
     /// Converts value to JSON string.
     ///
     /// - Parameters:
-    ///   - indent: Number of spaces to use for indentation (optional).
+    ///   - indent: If greater than 0, enables pretty-printed output using
+    ///             Foundation's default indentation (optional).
     ///   - ensure_ascii: If true (default), escape non-ASCII characters as `\uXXXX`.
     ///                   If false, output Unicode characters directly.
     @Sendable public static func tojson(
@@ -1086,11 +1087,12 @@ public enum Filters {
         )
 
         let encoder = JSONEncoder()
+        encoder.outputFormatting.insert(.sortedKeys)
         if let indent = arguments["indent"],
             case .int(let count) = indent,
             count > 0
         {
-            encoder.outputFormatting = .prettyPrinted
+            encoder.outputFormatting.insert(.prettyPrinted)
         }
 
         let ensureASCII: Bool
