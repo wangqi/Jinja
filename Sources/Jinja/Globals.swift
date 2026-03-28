@@ -207,7 +207,7 @@ public enum Globals: Sendable {
         _ env: Environment
     ) throws -> Value {
         var orderedDict = OrderedDictionary<String, Value>()
-        for (key, value) in kwargs {
+        for (key, value) in kwargs.sorted(by: { $0.key < $1.key }) {
             orderedDict[key] = value
         }
         return .object(orderedDict)
@@ -343,7 +343,7 @@ public enum Globals: Sendable {
         _ env: Environment
     ) throws -> Value {
         var namespaceDict = OrderedDictionary<String, Value>()
-        for (key, value) in kwargs {
+        for (key, value) in kwargs.sorted(by: { $0.key < $1.key }) {
             namespaceDict[key] = value
         }
         return .object(namespaceDict)

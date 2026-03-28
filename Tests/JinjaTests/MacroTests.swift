@@ -57,6 +57,23 @@ struct MacroTests {
         #expect(decoded.defaults["class"] == macro.defaults["class"])
     }
 
+    @Test("Decoded defaults are key-sorted")
+    func decodedDefaultsAreKeySorted() throws {
+        let macro = Macro(
+            name: "render",
+            parameters: ["a", "z"],
+            defaults: ["z": .integer(1), "a": .integer(2)],
+            body: [.text("x")]
+        )
+
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(macro)
+        let decoder = JSONDecoder()
+        let decoded = try decoder.decode(Macro.self, from: data)
+
+        #expect(Array(decoded.defaults.keys) == ["a", "z"])
+    }
+
     @Test("Codable round-trip with empty defaults")
     func codableRoundTripEmptyDefaults() throws {
         let macro = Macro(
