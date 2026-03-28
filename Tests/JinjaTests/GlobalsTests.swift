@@ -188,6 +188,28 @@ struct GlobalsTests {
         #expect(obj["b"] == .int(2))
     }
 
+    @Test("dict result has deterministic key ordering")
+    func dictKwargsOrdering() throws {
+        let permutations: [[(String, Value)]] = [
+            [("text", .string("hello")), ("priority", .int(1)), ("is_urgent", .boolean(true))],
+            [("text", .string("hello")), ("is_urgent", .boolean(true)), ("priority", .int(1))],
+            [("priority", .int(1)), ("text", .string("hello")), ("is_urgent", .boolean(true))],
+            [("priority", .int(1)), ("is_urgent", .boolean(true)), ("text", .string("hello"))],
+            [("is_urgent", .boolean(true)), ("text", .string("hello")), ("priority", .int(1))],
+            [("is_urgent", .boolean(true)), ("priority", .int(1)), ("text", .string("hello"))],
+        ]
+
+        for pairs in permutations {
+            let kwargs = Dictionary(uniqueKeysWithValues: pairs)
+            let result = try Globals.dict([], kwargs, env)
+            guard case let .object(obj) = result else {
+                #expect(Bool(false), "Expected object result")
+                continue
+            }
+            #expect(Array(obj.keys) == ["is_urgent", "priority", "text"])
+        }
+    }
+
     // MARK: - cycler
 
     @Test("cycler cycles through values")
@@ -252,6 +274,28 @@ struct GlobalsTests {
             return
         }
         #expect(obj["x"] == .int(1))
+    }
+
+    @Test("namespace result has deterministic key ordering")
+    func namespaceKwargsOrdering() throws {
+        let permutations: [[(String, Value)]] = [
+            [("text", .string("hello")), ("priority", .int(1)), ("is_urgent", .boolean(true))],
+            [("text", .string("hello")), ("is_urgent", .boolean(true)), ("priority", .int(1))],
+            [("priority", .int(1)), ("text", .string("hello")), ("is_urgent", .boolean(true))],
+            [("priority", .int(1)), ("is_urgent", .boolean(true)), ("text", .string("hello"))],
+            [("is_urgent", .boolean(true)), ("text", .string("hello")), ("priority", .int(1))],
+            [("is_urgent", .boolean(true)), ("priority", .int(1)), ("text", .string("hello"))],
+        ]
+
+        for pairs in permutations {
+            let kwargs = Dictionary(uniqueKeysWithValues: pairs)
+            let result = try Globals.namespace([], kwargs, env)
+            guard case let .object(obj) = result else {
+                #expect(Bool(false), "Expected object result")
+                continue
+            }
+            #expect(Array(obj.keys) == ["is_urgent", "priority", "text"])
+        }
     }
 
     // MARK: - lipsum
