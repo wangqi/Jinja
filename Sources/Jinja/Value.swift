@@ -55,7 +55,7 @@ public enum Value: Sendable {
             self = .array(values)
         case let dict as [String: Any?]:
             var orderedDict = OrderedDictionary<String, Value>()
-            for (key, value) in dict {
+            for (key, value) in dict.sorted(by: { $0.key < $1.key }) {
                 orderedDict[key] = try Value(any: value)
             }
             self = .object(orderedDict)
