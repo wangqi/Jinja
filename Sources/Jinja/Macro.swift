@@ -50,7 +50,7 @@ extension Macro: Codable {
         var orderedDictionary: OrderedDictionary<String, Expression> = [:]
 
         let decodedDefaults = try container.decode([String: Expression].self, forKey: .defaults)
-        for key in decodedDefaults.keys {
+        for key in decodedDefaults.keys.sorted() {
             orderedDictionary[key] = decodedDefaults[key]
         }
         defaults = orderedDictionary

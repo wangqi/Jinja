@@ -124,4 +124,279 @@ struct GlobalsTests {
             try Globals.strftimeNow([.int(2024)], [:], env)
         }
     }
+
+    // MARK: - range
+
+    @Test("range with 1 argument")
+    func rangeOneArg() throws {
+        let result = try Globals.range([.int(5)], [:], env)
+        #expect(result == .array([.int(0), .int(1), .int(2), .int(3), .int(4)]))
+    }
+
+    @Test("range with 2 arguments")
+    func rangeTwoArgs() throws {
+        let result = try Globals.range([.int(2), .int(5)], [:], env)
+        #expect(result == .array([.int(2), .int(3), .int(4)]))
+    }
+
+    @Test("range with 3 arguments")
+    func rangeThreeArgs() throws {
+        let result = try Globals.range([.int(0), .int(10), .int(3)], [:], env)
+        #expect(result == .array([.int(0), .int(3), .int(6), .int(9)]))
+    }
+
+    @Test("range with negative step")
+    func rangeNegativeStep() throws {
+        let result = try Globals.range([.int(5), .int(0), .int(-1)], [:], env)
+        #expect(result == .array([.int(5), .int(4), .int(3), .int(2), .int(1)]))
+    }
+
+    @Test("range with zero step throws")
+    func rangeZeroStep() throws {
+        #expect(throws: JinjaError.self) {
+            try Globals.range([.int(0), .int(5), .int(0)], [:], env)
+        }
+    }
+
+    @Test("range with wrong argument count throws")
+    func rangeWrongArgCount() throws {
+        #expect(throws: JinjaError.self) {
+            try Globals.range([], [:], env)
+        }
+        #expect(throws: JinjaError.self) {
+            try Globals.range([.int(1), .int(2), .int(3), .int(4)], [:], env)
+        }
+    }
+
+    @Test("range with non-integer argument throws")
+    func rangeNonIntArg() throws {
+        #expect(throws: JinjaError.self) {
+            try Globals.range([.string("5")], [:], env)
+        }
+    }
+
+    // MARK: - dict
+
+    @Test("dict creates object from kwargs")
+    func dictFromKwargs() throws {
+        let result = try Globals.dict([], ["a": .int(1), "b": .int(2)], env)
+        guard case let .object(obj) = result else {
+            #expect(Bool(false), "Expected object result")
+            return
+        }
+        #expect(obj["a"] == .int(1))
+        #expect(obj["b"] == .int(2))
+    }
+
+    @Test("dict result has deterministic key ordering")
+    func dictKwargsOrdering() throws {
+        let permutations: [[(String, Value)]] = [
+            [("text", .string("hello")), ("priority", .int(1)), ("is_urgent", .boolean(true))],
+            [("text", .string("hello")), ("is_urgent", .boolean(true)), ("priority", .int(1))],
+            [("priority", .int(1)), ("text", .string("hello")), ("is_urgent", .boolean(true))],
+            [("priority", .int(1)), ("is_urgent", .boolean(true)), ("text", .string("hello"))],
+            [("is_urgent", .boolean(true)), ("text", .string("hello")), ("priority", .int(1))],
+            [("is_urgent", .boolean(true)), ("priority", .int(1)), ("text", .string("hello"))],
+        ]
+
+        for pairs in permutations {
+            let kwargs = Dictionary(uniqueKeysWithValues: pairs)
+            let result = try Globals.dict([], kwargs, env)
+            guard case let .object(obj) = result else {
+                #expect(Bool(false), "Expected object result")
+                continue
+            }
+            #expect(Array(obj.keys) == ["is_urgent", "priority", "text"])
+        }
+    }
+
+    // MARK: - cycler
+
+    @Test("cycler cycles through values")
+    func cyclerCycles() throws {
+        let result = try Globals.cycler([.string("a"), .string("b")], [:], env)
+        guard case let .object(obj) = result else {
+            #expect(Bool(false), "Expected object result")
+            return
+        }
+
+        #expect(obj["current"] == .string("a"))
+
+        guard case let .function(nextFn) = obj["next"] else {
+            #expect(Bool(false), "Expected next to be a function")
+            return
+        }
+
+        let first = try nextFn([], [:], env)
+        #expect(first == .string("a"))
+
+        let second = try nextFn([], [:], env)
+        #expect(second == .string("b"))
+
+        let third = try nextFn([], [:], env)
+        #expect(third == .string("a"))
+    }
+
+    @Test("cycler with no arguments throws")
+    func cyclerEmpty() throws {
+        #expect(throws: JinjaError.self) {
+            try Globals.cycler([], [:], env)
+        }
+    }
+
+    // MARK: - joiner
+
+    @Test("joiner returns empty then separator")
+    func joinerBehavior() throws {
+        let result = try Globals.joiner([], [:], env)
+        guard case let .function(joinFn) = result else {
+            #expect(Bool(false), "Expected function result")
+            return
+        }
+
+        let first = try joinFn([], [:], env)
+        #expect(first == .string(""))
+
+        let second = try joinFn([], [:], env)
+        #expect(second == .string(", "))
+
+        let third = try joinFn([], [:], env)
+        #expect(third == .string(", "))
+    }
+
+    // MARK: - namespace
+
+    @Test("namespace creates object from kwargs")
+    func namespaceFromKwargs() throws {
+        let result = try Globals.namespace([], ["x": .int(1)], env)
+        guard case let .object(obj) = result else {
+            #expect(Bool(false), "Expected object result")
+            return
+        }
+        #expect(obj["x"] == .int(1))
+    }
+
+    @Test("namespace result has deterministic key ordering")
+    func namespaceKwargsOrdering() throws {
+        let permutations: [[(String, Value)]] = [
+            [("text", .string("hello")), ("priority", .int(1)), ("is_urgent", .boolean(true))],
+            [("text", .string("hello")), ("is_urgent", .boolean(true)), ("priority", .int(1))],
+            [("priority", .int(1)), ("text", .string("hello")), ("is_urgent", .boolean(true))],
+            [("priority", .int(1)), ("is_urgent", .boolean(true)), ("text", .string("hello"))],
+            [("is_urgent", .boolean(true)), ("text", .string("hello")), ("priority", .int(1))],
+            [("is_urgent", .boolean(true)), ("priority", .int(1)), ("text", .string("hello"))],
+        ]
+
+        for pairs in permutations {
+            let kwargs = Dictionary(uniqueKeysWithValues: pairs)
+            let result = try Globals.namespace([], kwargs, env)
+            guard case let .object(obj) = result else {
+                #expect(Bool(false), "Expected object result")
+                continue
+            }
+            #expect(Array(obj.keys) == ["is_urgent", "priority", "text"])
+        }
+    }
+
+    // MARK: - lipsum
+
+    @Test("lipsum without HTML")
+    func lipsumNoHtml() throws {
+        let result = try Globals.lipsum([], ["html": .boolean(false), "n": .int(2)], env)
+        guard case let .string(text) = result else {
+            #expect(Bool(false), "Expected string result")
+            return
+        }
+        #expect(!text.contains("<p>"))
+        #expect(!text.contains("</p>"))
+        #expect(text.contains("\n\n"), "Paragraphs should be separated by double newlines")
+    }
+
+    @Test("lipsum with single paragraph")
+    func lipsumSingleParagraph() throws {
+        let result = try Globals.lipsum([], ["n": .int(1), "html": .boolean(true)], env)
+        guard case let .string(text) = result else {
+            #expect(Bool(false), "Expected string result")
+            return
+        }
+        #expect(text.hasPrefix("<p>"))
+        #expect(text.hasSuffix("</p>"))
+        #expect(!text.contains("\n"), "Single paragraph should have no newlines")
+    }
+
+    // MARK: - range error paths
+
+    @Test("range with non-integer 2-arg throws")
+    func rangeNonInteger2Arg() throws {
+        #expect(throws: JinjaError.self) {
+            try Globals.range([.string("x"), .int(5)], [:], env)
+        }
+    }
+
+    @Test("range with non-integer 3-arg throws")
+    func rangeNonInteger3Arg() throws {
+        #expect(throws: JinjaError.self) {
+            try Globals.range([.int(0), .string("x"), .int(1)], [:], env)
+        }
+    }
+
+    // MARK: - lipsum error paths
+
+    @Test("lipsum with invalid args throws")
+    func lipsumInvalidArgs() throws {
+        #expect(throws: JinjaError.self) {
+            try Globals.lipsum([], ["n": .string("x"), "html": .boolean(true)], env)
+        }
+    }
+
+    // MARK: - strftime_now edge cases
+
+    @Test("strftime_now with unknown format code")
+    func strftimeNowUnknownFormatCode() throws {
+        let result = try Globals.strftimeNow([.string("%Q")], [:], env)
+        guard case let .string(str) = result else {
+            #expect(Bool(false), "Expected string result")
+            return
+        }
+        #expect(str == "%Q")
+    }
+
+    @Test("strftime_now with trailing percent")
+    func strftimeNowTrailingPercent() throws {
+        let result = try Globals.strftimeNow([.string("hello%")], [:], env)
+        guard case let .string(str) = result else {
+            #expect(Bool(false), "Expected string result")
+            return
+        }
+        #expect(str == "hello%")
+    }
+
+    // MARK: - cycler reset
+
+    @Test("cycler reset")
+    func cyclerReset() throws {
+        let result = try Globals.cycler([.string("a"), .string("b"), .string("c")], [:], env)
+        guard case let .object(obj) = result else {
+            #expect(Bool(false), "Expected object result")
+            return
+        }
+
+        guard case let .function(nextFn) = obj["next"],
+            case let .function(resetFn) = obj["reset"]
+        else {
+            #expect(Bool(false), "Expected next and reset functions")
+            return
+        }
+
+        let first = try nextFn([], [:], env)
+        #expect(first == .string("a"))
+
+        let second = try nextFn([], [:], env)
+        #expect(second == .string("b"))
+
+        _ = try resetFn([], [:], env)
+
+        let afterReset = try nextFn([], [:], env)
+        #expect(afterReset == .string("a"))
+    }
 }

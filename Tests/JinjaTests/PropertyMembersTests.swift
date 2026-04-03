@@ -359,6 +359,38 @@ struct PropertyMembersTests {
         #expect(getResult == .string("answer"))
     }
 
+    @Test("Object keys method")
+    func objectKeys() throws {
+        let dict: OrderedDictionary<String, Value> = ["a": .int(1), "b": .int(2), "c": .int(3)]
+        let value = Value.object(dict)
+        let result = try PropertyMembers.evaluate(value, "keys")
+
+        guard case let .function(fn) = result else {
+            Issue.record("Expected function")
+            return
+        }
+
+        let keysResult = try fn([], [:], Environment())
+        let expected = Value.array([.string("a"), .string("b"), .string("c")])
+        #expect(keysResult == expected)
+    }
+
+    @Test("Object values method")
+    func objectValues() throws {
+        let dict: OrderedDictionary<String, Value> = ["a": .int(1), "b": .int(2), "c": .int(3)]
+        let value = Value.object(dict)
+        let result = try PropertyMembers.evaluate(value, "values")
+
+        guard case let .function(fn) = result else {
+            Issue.record("Expected function")
+            return
+        }
+
+        let valuesResult = try fn([], [:], Environment())
+        let expected = Value.array([.int(1), .int(2), .int(3)])
+        #expect(valuesResult == expected)
+    }
+
     @Test("Object direct property access")
     func objectDirectProperty() throws {
         let dict: OrderedDictionary<String, Value> = ["foo": .string("bar")]
@@ -394,6 +426,93 @@ struct PropertyMembersTests {
     @Test("Array value property access")
     func arrayValueProperty() throws {
         let value = Value.array([.int(1), .int(2), .int(3)])
+        let result = try PropertyMembers.evaluate(value, "someProperty")
+        #expect(result == .undefined)
+    }
+
+    // MARK: - Object get with no key argument
+
+    @Test("Object get with no key argument throws")
+    func objectGetNoKey() throws {
+        let dict: OrderedDictionary<String, Value> = ["a": .int(1)]
+        let value = Value.object(dict)
+        let result = try PropertyMembers.evaluate(value, "get")
+
+        guard case let .function(fn) = result else {
+            Issue.record("Expected function")
+            return
+        }
+
+        #expect(throws: JinjaError.self) {
+            _ = try fn([], [:], Environment())
+        }
+    }
+
+    // MARK: - String startswith with non-string prefix
+
+    @Test("String startswith with non-string prefix throws")
+    func stringStartswithNonString() throws {
+        let value = Value.string("hello")
+        let result = try PropertyMembers.evaluate(value, "startswith")
+
+        guard case let .function(fn) = result else {
+            Issue.record("Expected function")
+            return
+        }
+
+        #expect(throws: JinjaError.self) {
+            _ = try fn([.int(42)], [:], Environment())
+        }
+    }
+
+    // MARK: - String endswith with non-string suffix
+
+    @Test("String endswith with non-string suffix throws")
+    func stringEndswithNonString() throws {
+        let value = Value.string("hello")
+        let result = try PropertyMembers.evaluate(value, "endswith")
+
+        guard case let .function(fn) = result else {
+            Issue.record("Expected function")
+            return
+        }
+
+        #expect(throws: JinjaError.self) {
+            _ = try fn([.int(42)], [:], Environment())
+        }
+    }
+
+    // MARK: - String replace with non-string arguments
+
+    @Test("String replace with non-string old throws")
+    func stringReplaceNonStringOld() throws {
+        let value = Value.string("hello")
+        let result = try PropertyMembers.evaluate(value, "replace")
+
+        guard case let .function(fn) = result else {
+            Issue.record("Expected function")
+            return
+        }
+
+        #expect(throws: JinjaError.self) {
+            _ = try fn([.int(1), .string("x")], [:], Environment())
+        }
+    }
+
+    // MARK: - Boolean value property access
+
+    @Test("Boolean value property access")
+    func booleanValueProperty() throws {
+        let value = Value.boolean(true)
+        let result = try PropertyMembers.evaluate(value, "someProperty")
+        #expect(result == .undefined)
+    }
+
+    // MARK: - Function value property access
+
+    @Test("Function value property access")
+    func functionValueProperty() throws {
+        let value = Value.function { _, _, _ in .null }
         let result = try PropertyMembers.evaluate(value, "someProperty")
         #expect(result == .undefined)
     }

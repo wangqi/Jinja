@@ -68,6 +68,8 @@ public enum Filters {
             return .int(arr.count)
         case let .object(obj):
             return .int(obj.count)
+        case .undefined:
+            return .int(0)
         default:
             throw JinjaError.runtime("length filter requires string, array, or object")
         }
@@ -86,15 +88,23 @@ public enum Filters {
         let arguments = try resolveCallArguments(
             args: Array(args.dropFirst()),
             kwargs: kwargs,
-            parameters: ["separator"],
-            defaults: ["separator": .string("")]
+            parameters: ["separator", "attribute"],
+            defaults: ["separator": .string(""), "attribute": .null]
         )
 
         guard case let .string(separator) = arguments["separator"] else {
             throw JinjaError.runtime("join filter requires string separator")
         }
 
-        let strings = array.map { $0.description }
+        let strings: [String]
+        if let attribute = arguments["attribute"], attribute != .null {
+            strings = try array.map {
+                let value = try resolveAttributeValue($0, attribute: attribute)
+                return value.description
+            }
+        } else {
+            strings = array.map { $0.description }
+        }
         return .string(strings.joined(separator: separator))
     }
 
@@ -262,7 +272,7 @@ public enum Filters {
             parameters: ["reverse", "case_sensitive", "attribute"],
             defaults: [
                 "reverse": .boolean(false),
-                "case_sensitive": .boolean(true),
+                "case_sensitive": .boolean(false),
                 "attribute": .null,
             ]
         )
@@ -270,29 +280,43 @@ public enum Filters {
         let reverse = arguments["reverse"]!.isTruthy
         let caseSensitive = arguments["case_sensitive"]!.isTruthy
 
-        let sortedItems: [Value]
-        if case let .string(attribute) = arguments["attribute"] {
-            sortedItems = try items.sorted { a, b in
-                let aValue = try PropertyMembers.evaluate(a, attribute)
-                let bValue = try PropertyMembers.evaluate(b, attribute)
-                let comparison = try aValue.compare(to: bValue)
-                return reverse ? comparison > 0 : comparison < 0
-            }
-        } else {
-            sortedItems = try items.sorted { a, b in
-                let comparison: Int
-                if !caseSensitive, case let .string(aStr) = a, case let .string(bStr) = b {
-                    comparison =
-                        aStr.lowercased() < bStr.lowercased()
-                        ? -1 : aStr.lowercased() > bStr.lowercased() ? 1 : 0
-                } else {
-                    comparison = try a.compare(to: b)
-                }
-                return reverse ? comparison > 0 : comparison < 0
-            }
+        func compare(_ lhs: Value, _ rhs: Value) throws -> Int {
+            try compareValues(lhs, rhs, caseSensitive: caseSensitive)
         }
 
-        return .array(sortedItems)
+        func stableSorted(_ values: [Value], by comparator: (Value, Value) throws -> Int) rethrows
+            -> [Value]
+        {
+            return try values.enumerated().sorted { a, b in
+                let comparison = try comparator(a.element, b.element)
+                if comparison == 0 { return a.offset < b.offset }
+                return comparison < 0
+            }.map(\.element)
+        }
+
+        let sortedItems: [Value]
+        if case let .string(attribute) = arguments["attribute"] {
+            let attributes = attribute.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+
+            if attributes.isEmpty {
+                sortedItems = try stableSorted(items, by: compare)
+            } else {
+                var sorted = items
+                for attr in attributes.reversed() {
+                    sorted = try stableSorted(sorted) { a, b in
+                        let aValue = try PropertyMembers.evaluate(a, String(attr))
+                        let bValue = try PropertyMembers.evaluate(b, String(attr))
+                        return try compare(aValue, bValue)
+                    }
+                }
+                sortedItems = sorted
+            }
+        } else {
+            sortedItems = try stableSorted(items, by: compare)
+        }
+
+        return .array(reverse ? Array(sortedItems.reversed()) : sortedItems)
     }
 
     /// Groups items by a given attribute.
@@ -308,23 +332,59 @@ public enum Filters {
         let arguments = try resolveCallArguments(
             args: Array(args.dropFirst()),
             kwargs: kwargs,
-            parameters: ["attribute"],
-            defaults: [:]
+            parameters: ["attribute", "default", "case_sensitive"],
+            defaults: ["default": .null, "case_sensitive": .boolean(false)]
         )
 
         guard case let .string(attribute) = arguments["attribute"] else {
             throw JinjaError.runtime("groupby filter requires attribute parameter")
         }
 
-        var groups = OrderedDictionary<Value, [Value]>()
-        for item in items {
-            let key = try PropertyMembers.evaluate(item, attribute)
-            groups[key, default: []].append(item)
+        let defaultValue = arguments["default"] ?? .null
+        let caseSensitive = arguments["case_sensitive"]!.isTruthy
+
+        func normalizedKey(_ key: Value) -> Value {
+            if !caseSensitive, case let .string(str) = key {
+                return .string(str.lowercased())
+            }
+            return key
         }
-        let result = groups.map { key, value in
+
+        func compare(_ lhs: Value, _ rhs: Value) -> Int {
+            (try? compareValues(
+                lhs,
+                rhs,
+                caseSensitive: caseSensitive,
+                useStringComparisonWhenCaseSensitive: true,
+                fallbackToDescription: true
+            )) ?? 0
+        }
+
+        let keyedItems: [(item: Value, displayKey: Value, normalized: Value)] = try items.map {
+            let rawKey = try PropertyMembers.evaluate($0, attribute)
+            let displayKey = rawKey == .undefined ? defaultValue : rawKey
+            return (item: $0, displayKey: displayKey, normalized: normalizedKey(displayKey))
+        }
+
+        let sortedKeyedItems = keyedItems.enumerated().sorted { lhs, rhs in
+            let comparison = compare(lhs.element.normalized, rhs.element.normalized)
+            if comparison == 0 { return lhs.offset < rhs.offset }
+            return comparison < 0
+        }.map(\.element)
+
+        var grouped: [(displayKey: Value, normalized: Value, items: [Value])] = []
+        for item in sortedKeyedItems {
+            if let last = grouped.last, last.normalized.isEquivalent(to: item.normalized) {
+                grouped[grouped.count - 1].items.append(item.item)
+            } else {
+                grouped.append((displayKey: item.displayKey, normalized: item.normalized, items: [item.item]))
+            }
+        }
+
+        let result = grouped.map { group in
             Value.object([
-                "grouper": key,
-                "list": .array(value),
+                "grouper": group.displayKey,
+                "list": .array(group.items),
             ])
         }
         return .array(result)
@@ -382,8 +442,8 @@ public enum Filters {
         let arguments = try resolveCallArguments(
             args: Array(args.dropFirst()),
             kwargs: kwargs,
-            parameters: ["filterName", "attribute"],
-            defaults: ["filterName": .null, "attribute": .null]
+            parameters: ["filterName", "attribute", "default"],
+            defaults: ["filterName": .null, "attribute": .null, "default": .null]
         )
 
         if case let .string(filterName) = arguments["filterName"] {
@@ -392,10 +452,13 @@ public enum Filters {
                     try Interpreter.evaluateFilter(filterName, [$0], kwargs: [:], env: env)
                 }
             )
-        } else if case let .string(attribute) = arguments["attribute"] {
+        } else if let attribute = arguments["attribute"], attribute != .null {
+            let defaultValue = arguments["default"] ?? .null
+
             return try .array(
                 items.map {
-                    try PropertyMembers.evaluate($0, attribute)
+                    let value = try resolveAttributeValue($0, attribute: attribute)
+                    return value == .undefined ? defaultValue : value
                 }
             )
         }
@@ -720,9 +783,9 @@ public enum Filters {
         while formatIdx < formatString.endIndex {
             let char = formatString[formatIdx]
             if char == "%", argIdx < formatArgs.count {
-                formatIdx = formatString.index(after: formatIdx)
-                if formatIdx < formatString.endIndex {
-                    let specifier = formatString[formatIdx]
+                let nextIdx = formatString.index(after: formatIdx)
+                if nextIdx < formatString.endIndex {
+                    let specifier = formatString[nextIdx]
                     if specifier == "s" {
                         result += formatArgs[argIdx].description
                         argIdx += 1
@@ -730,13 +793,15 @@ public enum Filters {
                         result.append("%")
                         result.append(specifier)
                     }
+                    formatIdx = formatString.index(after: nextIdx)
                 } else {
                     result.append("%")
+                    formatIdx = nextIdx
                 }
             } else {
                 result.append(char)
+                formatIdx = formatString.index(after: formatIdx)
             }
-            formatIdx = formatString.index(after: formatIdx)
         }
         return .string(result)
     }
@@ -754,10 +819,12 @@ public enum Filters {
         let arguments = try resolveCallArguments(
             args: Array(args.dropFirst()),
             kwargs: kwargs,
-            parameters: ["width", "break_long_words"],
+            parameters: ["width", "break_long_words", "wrapstring", "break_on_hyphens"],
             defaults: [
                 "width": .int(79),
                 "break_long_words": .boolean(true),
+                "wrapstring": .null,
+                "break_on_hyphens": .boolean(true),
             ]
         )
 
@@ -767,28 +834,84 @@ public enum Filters {
         } else {
             width = 79
         }
-        _ = arguments["break_long_words"]!.isTruthy
+        let breakLongWords = arguments["break_long_words"]!.isTruthy
+        let breakOnHyphens = arguments["break_on_hyphens"]!.isTruthy
+
+        let wrapstring: String
+        if case let .string(value) = arguments["wrapstring"] {
+            wrapstring = value
+        } else {
+            wrapstring = "\n"
+        }
 
         var lines = [String]()
         let paragraphs = str.components(separatedBy: .newlines)
         for paragraph in paragraphs {
             var line = ""
-            let words = paragraph.components(separatedBy: .whitespaces)
-            for word in words {
-                if line.isEmpty {
-                    line = word
-                } else if line.count + word.count + 1 <= width {
-                    line += " \(word)"
-                } else {
+            let words = paragraph.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+
+            func flushLine() {
+                if !line.isEmpty {
                     lines.append(line)
-                    line = word
+                    line = ""
                 }
             }
-            if !line.isEmpty {
-                lines.append(line)
+
+            func splitToken(_ token: String) -> [String] {
+                if !breakLongWords || token.count <= width {
+                    return [token]
+                }
+
+                var parts = [String]()
+                let segments: [String]
+                if breakOnHyphens, token.contains("-") {
+                    let raw = token.split(separator: "-", omittingEmptySubsequences: false)
+                    segments = raw.enumerated().map { index, segment in
+                        if index < raw.count - 1 {
+                            return "\(segment)-"
+                        }
+                        return String(segment)
+                    }
+                } else {
+                    segments = [token]
+                }
+
+                for segment in segments {
+                    if segment.count <= width {
+                        parts.append(segment)
+                    } else {
+                        var startIndex = segment.startIndex
+                        while startIndex < segment.endIndex {
+                            let endIndex =
+                                segment.index(
+                                    startIndex,
+                                    offsetBy: width,
+                                    limitedBy: segment.endIndex
+                                ) ?? segment.endIndex
+                            parts.append(String(segment[startIndex ..< endIndex]))
+                            startIndex = endIndex
+                        }
+                    }
+                }
+                return parts
             }
+
+            for word in words {
+                for token in splitToken(word) {
+                    if line.isEmpty {
+                        line = token
+                    } else if line.count + token.count + 1 <= width {
+                        line += " \(token)"
+                    } else {
+                        flushLine()
+                        line = token
+                    }
+                }
+            }
+
+            flushLine()
         }
-        return .string(lines.joined(separator: "\n"))
+        return .string(lines.joined(separator: wrapstring))
     }
 
     /// Formats file size in human readable format.
@@ -808,23 +931,33 @@ public enum Filters {
             defaults: ["binary": .boolean(false)]
         )
 
-        guard case let .double(num) = value else {
+        let bytes: Double
+        switch value {
+        case let .double(num):
+            bytes = num
+        case let .int(num):
+            bytes = Double(num)
+        default:
             return .string("")
         }
 
         let binary = arguments["binary"]!.isTruthy
-        let bytes = num
         let unit: Double = binary ? 1024 : 1000
         if bytes < unit {
             return .string("\(Int(bytes)) Bytes")
         }
         let exp = Int(log(bytes) / log(unit))
         let pre = (binary ? "KMGTPEZY" : "kMGTPEZY")
-        let preIndex = pre.index(pre.startIndex, offsetBy: exp - 1)
+        let clampedExp = Swift.min(Swift.max(exp, 1), pre.count)
+        let preIndex = pre.index(pre.startIndex, offsetBy: clampedExp - 1)
         let preChar = pre[preIndex]
         let suffix = binary ? "iB" : "B"
         return .string(
-            String(format: "%.1f %s\(suffix)", bytes / pow(unit, Double(exp)), String(preChar))
+            String(
+                format: "%.1f %@\(suffix)",
+                bytes / pow(unit, Double(clampedExp)),
+                String(preChar)
+            )
         )
     }
 
@@ -847,6 +980,7 @@ public enum Filters {
 
         let autospace = arguments["autospace"]!.isTruthy
         var result = ""
+        var needsSpace = false
         for (key, value) in dict {
             if value == .null || value == .undefined { continue }
             // Validate key doesn't contain invalid characters
@@ -858,7 +992,9 @@ public enum Filters {
                 .replacingOccurrences(of: "<", with: "&lt;")
                 .replacingOccurrences(of: ">", with: "&gt;")
                 .replacingOccurrences(of: "\"", with: "&quot;")
+            if needsSpace { result += " " }
             result += "\(key)=\"\(escapedValue)\""
+            needsSpace = true
         }
         if autospace && !result.isEmpty {
             result = " " + result
@@ -896,14 +1032,21 @@ public enum Filters {
             return .string("")
         }
 
-        _ = try resolveCallArguments(
+        let arguments = try resolveCallArguments(
             args: Array(args.dropFirst()),
             kwargs: kwargs,
-            parameters: [],
-            defaults: [:]
+            parameters: ["chars"],
+            defaults: ["chars": .null]
         )
 
-        return .string(str.trimmingCharacters(in: .whitespacesAndNewlines))
+        let characterSet: CharacterSet
+        if case let .string(chars) = arguments["chars"], !chars.isEmpty {
+            characterSet = CharacterSet(charactersIn: chars)
+        } else {
+            characterSet = .whitespacesAndNewlines
+        }
+
+        return .string(str.trimmingCharacters(in: characterSet))
     }
 
     /// Escapes HTML characters (alias for forceescape).
@@ -923,6 +1066,12 @@ public enum Filters {
     }
 
     /// Converts value to JSON string.
+    ///
+    /// - Parameters:
+    ///   - indent: If greater than 0, enables pretty-printed output using
+    ///             Foundation's default indentation (optional).
+    ///   - ensure_ascii: If true (default), escape non-ASCII characters as `\uXXXX`.
+    ///                   If false, output Unicode characters directly.
     @Sendable public static func tojson(
         _ args: [Value],
         kwargs: [String: Value] = [:],
@@ -933,25 +1082,51 @@ public enum Filters {
         let arguments = try resolveCallArguments(
             args: Array(args.dropFirst()),
             kwargs: kwargs,
-            parameters: ["indent"],
-            defaults: ["indent": .null]
+            parameters: ["indent", "ensure_ascii"],
+            defaults: ["indent": .null, "ensure_ascii": .boolean(true)]
         )
 
         let encoder = JSONEncoder()
+        encoder.outputFormatting.insert(.sortedKeys)
         if let indent = arguments["indent"],
             case .int(let count) = indent,
             count > 0
         {
-            encoder.outputFormatting = .prettyPrinted
+            encoder.outputFormatting.insert(.prettyPrinted)
+        }
+
+        let ensureASCII: Bool
+        if let ensureASCIIValue = arguments["ensure_ascii"] {
+            ensureASCII = ensureASCIIValue.isTruthy
+        } else {
+            ensureASCII = true
         }
 
         if let jsonData = (try? encoder.encode(value)),
             let jsonString = String(data: jsonData, encoding: .utf8)
         {
+            if ensureASCII {
+                return .string(escapeNonASCII(jsonString))
+            }
             return .string(jsonString)
         } else {
             return .string("null")
         }
+    }
+
+    /// Escapes non-ASCII characters in a string as `\uXXXX` sequences.
+    private static func escapeNonASCII(_ string: String) -> String {
+        var result = ""
+        result.reserveCapacity(string.utf16.count)
+        // Iterate UTF-16 code units so non-BMP scalars emit surrogate pairs.
+        for codeUnit in string.utf16 {
+            if codeUnit > 127 {
+                result += String(format: "\\u%04x", codeUnit)
+            } else if let scalar = UnicodeScalar(codeUnit) {
+                result.append(Character(scalar))
+            }
+        }
+        return result
     }
 
     /// Returns absolute value of a number.
@@ -1075,11 +1250,17 @@ public enum Filters {
         let arguments = try resolveCallArguments(
             args: Array(args.dropFirst()),
             kwargs: kwargs,
-            parameters: ["default"],
-            defaults: ["default": .int(0)]
+            parameters: ["default", "base"],
+            defaults: ["default": .int(0), "base": .int(10)]
         )
 
         let defaultValue = arguments["default"]!
+        let base: Int
+        if case let .int(value) = arguments["base"] {
+            base = value
+        } else {
+            base = 10
+        }
 
         switch value {
         case let .int(i):
@@ -1087,11 +1268,29 @@ public enum Filters {
         case let .double(n):
             return .int(Int(n))
         case let .string(s):
-            if let converted = Int(s) {
-                return .int(converted)
-            } else {
+            let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.hasPrefix("0b") || trimmed.hasPrefix("0B") {
+                let digits = String(trimmed.dropFirst(2))
+                if let converted = Int(digits, radix: 2) { return .int(converted) }
                 return defaultValue
             }
+            if trimmed.hasPrefix("0o") || trimmed.hasPrefix("0O") {
+                let digits = String(trimmed.dropFirst(2))
+                if let converted = Int(digits, radix: 8) { return .int(converted) }
+                return defaultValue
+            }
+            if trimmed.hasPrefix("0x") || trimmed.hasPrefix("0X") {
+                let digits = String(trimmed.dropFirst(2))
+                if let converted = Int(digits, radix: 16) { return .int(converted) }
+                return defaultValue
+            }
+            if base != 10, (2 ... 36).contains(base), let converted = Int(trimmed, radix: base) {
+                return .int(converted)
+            }
+            if let converted = Int(trimmed) {
+                return .int(converted)
+            }
+            return defaultValue
         default:
             return defaultValue
         }
@@ -1136,20 +1335,22 @@ public enum Filters {
         let arguments = try resolveCallArguments(
             args: Array(args.dropFirst()),
             kwargs: kwargs,
-            parameters: ["attribute"],
-            defaults: ["attribute": .null]
+            parameters: ["case_sensitive", "attribute"],
+            defaults: ["case_sensitive": .boolean(false), "attribute": .null]
         )
+
+        let caseSensitive = arguments["case_sensitive"]!.isTruthy
 
         if case let .string(attribute) = arguments["attribute"] {
             return try items.max(by: { a, b in
                 let aValue = try PropertyMembers.evaluate(a, attribute)
                 let bValue = try PropertyMembers.evaluate(b, attribute)
-                return try aValue.compare(to: bValue) < 0
+                return try compareValues(aValue, bValue, caseSensitive: caseSensitive) < 0
             }) ?? .undefined
         } else {
             return items.max(by: { a, b in
                 do {
-                    return try a.compare(to: b) < 0
+                    return try compareValues(a, b, caseSensitive: caseSensitive) < 0
                 } catch {
                     return false
                 }
@@ -1168,20 +1369,22 @@ public enum Filters {
         let arguments = try resolveCallArguments(
             args: Array(args.dropFirst()),
             kwargs: kwargs,
-            parameters: ["attribute"],
-            defaults: ["attribute": .null]
+            parameters: ["case_sensitive", "attribute"],
+            defaults: ["case_sensitive": .boolean(false), "attribute": .null]
         )
+
+        let caseSensitive = arguments["case_sensitive"]!.isTruthy
 
         if case let .string(attribute) = arguments["attribute"] {
             return try items.min(by: { a, b in
                 let aValue = try PropertyMembers.evaluate(a, attribute)
                 let bValue = try PropertyMembers.evaluate(b, attribute)
-                return try aValue.compare(to: bValue) < 0
+                return try compareValues(aValue, bValue, caseSensitive: caseSensitive) < 0
             }) ?? .undefined
         } else {
             return items.min(by: { a, b in
                 do {
-                    return try a.compare(to: b) < 0
+                    return try compareValues(a, b, caseSensitive: caseSensitive) < 0
                 } catch {
                     return false
                 }
@@ -1377,24 +1580,17 @@ public enum Filters {
             defaults: [:]
         )
 
-        let str: String
         if case let .string(s) = value {
-            str = s
-        } else if case .object(let dict) = value {
-            str = dict.map { key, value in
-                let encodedKey =
-                    key.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-                let encodedValue =
-                    value.description.addingPercentEncoding(
-                        withAllowedCharacters: .urlQueryAllowed
-                    ) ?? ""
-                return "\(encodedKey)=\(encodedValue)"
-            }.joined(separator: "&")
-        } else {
-            return .string("")
+            return .string(s.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")
         }
-
-        return .string(str.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")
+        if case .object(let dict) = value {
+            var components = URLComponents()
+            components.queryItems = dict.map { key, value in
+                URLQueryItem(name: key, value: value.description)
+            }
+            return .string(components.percentEncodedQuery ?? "")
+        }
+        return .string("")
     }
 
     /// Batches items into groups.
@@ -1485,8 +1681,13 @@ public enum Filters {
         let arguments = try resolveCallArguments(
             args: Array(args.dropFirst()),
             kwargs: kwargs,
-            parameters: ["length", "killwords", "end"],
-            defaults: ["length": .int(255), "killwords": .boolean(false), "end": .string("...")]
+            parameters: ["length", "killwords", "end", "leeway"],
+            defaults: [
+                "length": .int(255),
+                "killwords": .boolean(false),
+                "end": .string("..."),
+                "leeway": .int(5),
+            ]
         )
 
         let length: Int
@@ -1498,6 +1699,13 @@ public enum Filters {
 
         let killwords = arguments["killwords"]!.isTruthy
 
+        let leeway: Int
+        if case let .int(value) = arguments["leeway"]! {
+            leeway = Swift.max(0, value)
+        } else {
+            leeway = 5
+        }
+
         let end: String
         if case let .string(e) = arguments["end"]! {
             end = e
@@ -1505,7 +1713,7 @@ public enum Filters {
             end = "..."
         }
 
-        if str.count <= length {
+        if str.count <= length + leeway {
             return .string(str)
         }
 
@@ -1531,18 +1739,34 @@ public enum Filters {
             return .array([])
         }
 
-        _ = try resolveCallArguments(
+        let arguments = try resolveCallArguments(
             args: Array(args.dropFirst()),
             kwargs: kwargs,
-            parameters: [],
-            defaults: [:]
+            parameters: ["case_sensitive", "attribute"],
+            defaults: ["case_sensitive": .boolean(false), "attribute": .null]
         )
+
+        let caseSensitive = arguments["case_sensitive"]!.isTruthy
+
+        func normalizedKey(_ value: Value) -> Value {
+            if !caseSensitive, case let .string(str) = value {
+                return .string(str.lowercased())
+            }
+            return value
+        }
 
         var seen = Set<Value>()
         var result = [Value]()
         for item in items {
-            if !seen.contains(item) {
-                seen.insert(item)
+            let key: Value
+            if let attribute = arguments["attribute"], attribute != .null {
+                key = try resolveAttributeValue(item, attribute: attribute)
+            } else {
+                key = item
+            }
+            let normalized = normalizedKey(key)
+            if !seen.contains(normalized) {
+                seen.insert(normalized)
                 result.append(item)
             }
         }
@@ -1676,12 +1900,13 @@ public enum Filters {
         let arguments = try resolveCallArguments(
             args: Array(args.dropFirst()),
             kwargs: kwargs,
-            parameters: ["trim_url_limit", "nofollow", "target", "rel"],
+            parameters: ["trim_url_limit", "nofollow", "target", "rel", "extra_schemes"],
             defaults: [
                 "trim_url_limit": .null,
                 "nofollow": .boolean(false),
                 "target": .null,
                 "rel": .null,
+                "extra_schemes": .null,
             ]
         )
 
@@ -1711,32 +1936,92 @@ public enum Filters {
         func buildAttributes() -> String {
             var attributes = ""
             if nofollow { attributes += " rel=\"nofollow\"" }
-            if let target = target { attributes += " target=\"\(target)\"" }
-            if let rel = rel { attributes += " rel=\"\(rel)\"" }
+            if let target = target { attributes += " target=\"\(htmlEscape(target))\"" }
+            if let rel = rel { attributes += " rel=\"\(htmlEscape(rel))\"" }
             return attributes
         }
 
-        // Use URLComponents to detect and validate URLs
-        var result = text
-        let words = text.components(separatedBy: .whitespacesAndNewlines)
+        let extraSchemes: Set<String> = {
+            guard case let .array(values) = arguments["extra_schemes"] else { return [] }
+            return Set(
+                values.compactMap { value in
+                    if case let .string(scheme) = value { return scheme.lowercased() }
+                    return nil
+                }
+            )
+        }()
+        let safeSchemes = Set(["http", "https", "mailto"])
+        let allowedSchemes = safeSchemes.union(extraSchemes)
 
-        for word in words {
-            // Check if the word looks like a URL
-            guard word.hasPrefix("http://") || word.hasPrefix("https://") else { continue }
+        let leadingPunctuation = CharacterSet(charactersIn: "([")
+        let trailingPunctuation = CharacterSet(charactersIn: ".,:;!?)\"]")
 
-            // Validate using URLComponents
-            guard let urlComponents = URLComponents(string: word),
-                let scheme = urlComponents.scheme,
-                scheme == "http" || scheme == "https",
-                urlComponents.host != nil
-            else { continue }
+        let nsText = text as NSString
+        let regex = try NSRegularExpression(pattern: "\\S+")
+        var result = ""
+        var lastIndex = 0
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
 
-            let url = word
-            let displayUrl =
-                trimUrlLimit != nil && url.count > trimUrlLimit!
-                ? String(url.prefix(trimUrlLimit!)) + "..." : url
-            let replacement = "<a href=\"\(url)\"\(buildAttributes())>\(displayUrl)</a>"
-            result = result.replacingOccurrences(of: word, with: replacement)
+        for match in matches {
+            let range = match.range
+            if range.location > lastIndex {
+                result += nsText.substring(with: NSRange(location: lastIndex, length: range.location - lastIndex))
+            }
+            let word = nsText.substring(with: range)
+            var core = word
+            var prefix = ""
+            var suffix = ""
+
+            while let first = core.unicodeScalars.first, leadingPunctuation.contains(first) {
+                prefix.append(Character(first))
+                core.removeFirst()
+            }
+            while let last = core.unicodeScalars.last, trailingPunctuation.contains(last) {
+                suffix.insert(Character(last), at: suffix.startIndex)
+                core.removeLast()
+            }
+
+            var replacement = word
+            if !core.isEmpty {
+                let lower = core.lowercased()
+                let hasScheme = core.contains(":")
+                let isMailto = lower.hasPrefix("mailto:")
+                let isHttp = lower.hasPrefix("http://") || lower.hasPrefix("https://")
+                let isWww = lower.hasPrefix("www.")
+                let isEmail = core.contains("@") && !isHttp && !isMailto
+
+                let schemeMatch: Bool = {
+                    guard hasScheme else { return false }
+                    let scheme = lower.split(separator: ":").first.map(String.init) ?? ""
+                    return allowedSchemes.contains(scheme)
+                }()
+
+                if isHttp || isWww || isMailto || isEmail || schemeMatch {
+                    let url: String
+                    if isEmail && !isMailto {
+                        url = "mailto:\(core)"
+                    } else if isWww {
+                        url = "https://\(core)"
+                    } else {
+                        url = core
+                    }
+
+                    let displayUrl =
+                        trimUrlLimit != nil && core.count > trimUrlLimit!
+                        ? String(core.prefix(trimUrlLimit!)) + "..." : core
+                    let escapedUrl = htmlEscape(url)
+                    let escapedDisplayUrl = htmlEscape(displayUrl)
+                    replacement =
+                        "\(prefix)<a href=\"\(escapedUrl)\"\(buildAttributes())>\(escapedDisplayUrl)</a>\(suffix)"
+                }
+            }
+
+            result += replacement
+            lastIndex = range.location + range.length
+        }
+
+        if lastIndex < nsText.length {
+            result += nsText.substring(from: lastIndex)
         }
 
         return .string(result)
@@ -1753,6 +2038,7 @@ public enum Filters {
         "count": length,  // alias for length
         "join": join,
         "default": `default`,
+        "d": `default`,  // alias for default
         "first": first,
         "last": last,
         "random": random,
@@ -1801,4 +2087,65 @@ public enum Filters {
         "pprint": pprint,
         "urlize": urlize,
     ]
+}
+
+// MARK: -
+
+private func resolveAttributeValue(_ item: Value, attribute: Value) throws -> Value {
+    switch attribute {
+    case let .string(name):
+        return try PropertyMembers.evaluate(item, name)
+    case let .int(index):
+        switch item {
+        case let .array(values):
+            if index >= 0, index < values.count {
+                return values[index]
+            }
+            return .undefined
+        case let .object(values):
+            return values[String(index)] ?? .undefined
+        default:
+            return .undefined
+        }
+    default:
+        return .undefined
+    }
+}
+
+private func compareValues(
+    _ lhs: Value,
+    _ rhs: Value,
+    caseSensitive: Bool,
+    useStringComparisonWhenCaseSensitive: Bool = false,
+    fallbackToDescription: Bool = false
+) throws -> Int {
+    if case let .string(aStr) = lhs, case let .string(bStr) = rhs {
+        if !caseSensitive || useStringComparisonWhenCaseSensitive {
+            let left = caseSensitive ? aStr : aStr.lowercased()
+            let right = caseSensitive ? bStr : bStr.lowercased()
+            if left == right { return 0 }
+            return left < right ? -1 : 1
+        }
+    }
+
+    do {
+        return try lhs.compare(to: rhs)
+    } catch {
+        if fallbackToDescription {
+            let left = lhs.description
+            let right = rhs.description
+            if left == right { return 0 }
+            return left < right ? -1 : 1
+        }
+        throw error
+    }
+}
+
+private func htmlEscape(_ string: String) -> String {
+    string
+        .replacingOccurrences(of: "&", with: "&amp;")
+        .replacingOccurrences(of: "<", with: "&lt;")
+        .replacingOccurrences(of: ">", with: "&gt;")
+        .replacingOccurrences(of: "\"", with: "&#34;")
+        .replacingOccurrences(of: "'", with: "&#39;")
 }

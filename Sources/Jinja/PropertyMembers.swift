@@ -151,8 +151,8 @@ public enum PropertyMembers {
         _ obj: OrderedDictionary<String, Value>,
         _ propertyName: String
     ) throws -> Value {
-        // Support Python-like dict.items() for iteration
-        if propertyName == "items" {
+        switch propertyName {
+        case "items":
             let fn: @Sendable ([Value], [String: Value], Environment) throws -> Value = {
                 args,
                 kwargs,
@@ -162,10 +162,7 @@ public enum PropertyMembers {
                 return .array(pairs)
             }
             return .function(fn)
-        }
-
-        // Support Python-like dict.get(key, default) method
-        if propertyName == "get" {
+        case "get":
             let fn: @Sendable ([Value], [String: Value], Environment) throws -> Value = {
                 args,
                 kwargs,
@@ -193,9 +190,28 @@ public enum PropertyMembers {
                 return obj[key] ?? defaultValue
             }
             return .function(fn)
+        case "keys":
+            let fn: @Sendable ([Value], [String: Value], Environment) throws -> Value = {
+                args,
+                kwargs,
+                _ in
+                _ = try resolveCallArguments(args: args, kwargs: kwargs, parameters: [])
+                let keys = obj.keys.map { Value.string($0) }
+                return .array(keys)
+            }
+            return .function(fn)
+        case "values":
+            let fn: @Sendable ([Value], [String: Value], Environment) throws -> Value = {
+                args,
+                kwargs,
+                _ in
+                _ = try resolveCallArguments(args: args, kwargs: kwargs, parameters: [])
+                return .array(Array(obj.values))
+            }
+            return .function(fn)
+        default:
+            return obj[propertyName] ?? .undefined
         }
-
-        return obj[propertyName] ?? .undefined
     }
 }
 
