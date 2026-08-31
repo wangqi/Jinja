@@ -126,19 +126,26 @@ public enum Lexer: Sendable {
         // When preceded by '{', we keep a single space to prevent token merging.
         // When preceded by other characters, we strip the whitespace entirely.
 
+        // The start-of-string rules MUST run before the capturing rules. The capturing rule
+        // matches at offset 0 too (its `([^\{])` binds the first character of the template) and
+        // consumes the `-`, which left the `^` rule unable to fire and exactly one leading
+        // whitespace character surviving — a spec violation, and the reason a GGUF template
+        // beginning "\n{%- if …" produced a prompt with a stray leading newline.
+        // wangqi modified 2026-08-29
+
         // Handle {%- : if preceded by '{', keep one space; otherwise strip whitespace
         result = result.replacing(#/\{\s+\{%-/#, with: "{ {%")
+        result = result.replacing(#/^\s*\{%-/#, with: "{%")
         result = result.replacing(#/([^\{])\s*\{%-/#) { match in
             "\(match.1){%"
         }
-        result = result.replacing(#/^\s*\{%-/#, with: "{%")
 
         // Handle {{- : if preceded by '{', keep one space; otherwise strip whitespace
         result = result.replacing(#/\{\s+\{\{-/#, with: "{ {{")
+        result = result.replacing(#/^\s*\{\{-/#, with: "{{")
         result = result.replacing(#/([^\{])\s*\{\{-/#) { match in
             "\(match.1){{"
         }
-        result = result.replacing(#/^\s*\{\{-/#, with: "{{")
 
         return result
     }

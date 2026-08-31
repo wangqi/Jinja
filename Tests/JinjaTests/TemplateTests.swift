@@ -123,6 +123,49 @@ struct TemplateTests {
         #expect(try rendered == Template(nodes: nodes).render(context))
     }
 
+    /// Whitespace before a template's FIRST `{{-` / `{%-` must be stripped, exactly as it is
+    /// anywhere else in the template.
+    ///
+    /// `Lexer.preprocess` used to run the capturing rule (`([^\{])\s*\{\{-`) before the
+    /// start-of-string rule (`^\s*\{\{-`). The capturing rule matches at offset 0 too — its
+    /// `([^\{])` binds the template's first character — and consumes the `-`, so the `^` rule
+    /// could never fire and exactly one leading whitespace character survived.
+    ///
+    /// Asserted on TOKENS, not on rendered text: every integration test in this file compares
+    /// with `.trimmingCharacters(in: .whitespacesAndNewlines)` on both sides, so none of them can
+    /// see a leading newline at all.
+    ///
+    /// wangqi modified 2026-08-29
+    @Test("Leading whitespace before {{- is stripped")
+    func leadingWhitespaceBeforeOpenExpression() throws {
+        let string = "\n{{- 'A' -}} B"
+        let context: Context = [:]
+
+        let tokens = try Lexer.tokenize(string)
+        #expect(
+            tokens == [
+                Token(kind: .openExpression, value: "{{", position: 0),
+                Token(kind: .string, value: "A", position: 3),
+                Token(kind: .closeExpression, value: "}}", position: 7),
+                Token(kind: .text, value: "B", position: 9),
+                Token(kind: .eof, value: "", position: 10),
+            ]
+        )
+
+        #expect(try Template(string).render(context) == "AB")
+    }
+
+    /// The same rule for a statement delimiter, and the merge guard it must not break: a literal
+    /// `{` directly before the delimiter still keeps one space, or `{ {%` would lex as `{{` + `%`.
+    @Test("Leading whitespace before {%- is stripped, and the '{' merge guard survives")
+    func leadingWhitespaceBeforeOpenStatement() throws {
+        let context: Context = [:]
+
+        #expect(try Template("\n{%- if true -%}\nX{%- endif -%}").render(context) == "X")
+        #expect(try Template("  \n\n{%- if true %}X{% endif %}").render(context) == "X")
+        #expect(try Template("{\n{%- if true %}X{% endif %}").render(context) == "{ X")
+    }
+
     @Test("Boolean literals")
     func booleanLiterals() throws {
         let string = #"|{{ true }}|{{ false }}|{{ True }}|{{ False }}|"#
