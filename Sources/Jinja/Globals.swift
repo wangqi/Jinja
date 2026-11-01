@@ -105,18 +105,23 @@ public enum Globals: Sendable {
             throw JinjaError.runtime("range() step argument must not be zero")
         }
 
+        // Stop when the next value overflows, because it would be past `stop`.
         var result: [Value] = []
         if step > 0 {
             var current = start
             while current < stop {
                 result.append(.int(current))
-                current += step
+                let (next, overflow) = current.addingReportingOverflow(step)
+                if overflow { break }
+                current = next
             }
         } else {
             var current = start
             while current > stop {
                 result.append(.int(current))
-                current += step
+                let (next, overflow) = current.addingReportingOverflow(step)
+                if overflow { break }
+                current = next
             }
         }
 
@@ -168,11 +173,15 @@ public enum Globals: Sendable {
 
         var paragraphs: [String] = []
 
-        for _ in 0 ..< n {
-            let wordCount = Int.random(in: min ... max)
+        for _ in 0 ..< Swift.max(0, n) {
+            // Like Python's `randrange(min, max)`, which Jinja2 calls for each paragraph.
+            guard min < max else {
+                throw JinjaError.runtime("empty range in randrange(\(min), \(max))")
+            }
+            let wordCount = Int.random(in: min ..< max)
             var paragraph: [String] = []
 
-            for _ in 0 ..< wordCount {
+            for _ in 0 ..< Swift.max(0, wordCount) {
                 paragraph.append(words.randomElement()!)
             }
 
@@ -206,9 +215,9 @@ public enum Globals: Sendable {
         _ kwargs: [String: Value],
         _ env: Environment
     ) throws -> Value {
-        var orderedDict = OrderedDictionary<String, Value>()
+        var orderedDict = OrderedDictionary<ObjectKey, Value>()
         for (key, value) in kwargs.sorted(by: { $0.key < $1.key }) {
-            orderedDict[key] = value
+            orderedDict[.string(key)] = value
         }
         return .object(orderedDict)
     }
@@ -265,7 +274,7 @@ public enum Globals: Sendable {
 
         let cyclerInstance = Cycler(items: args)
 
-        var cyclerDict = OrderedDictionary<String, Value>()
+        var cyclerDict = OrderedDictionary<ObjectKey, Value>()
         cyclerDict["current"] = cyclerInstance.current
         cyclerDict["next"] = .function { (_, _, _) throws -> Value in
             return cyclerInstance.next()
@@ -342,9 +351,9 @@ public enum Globals: Sendable {
         _ kwargs: [String: Value],
         _ env: Environment
     ) throws -> Value {
-        var namespaceDict = OrderedDictionary<String, Value>()
+        var namespaceDict = OrderedDictionary<ObjectKey, Value>()
         for (key, value) in kwargs.sorted(by: { $0.key < $1.key }) {
-            namespaceDict[key] = value
+            namespaceDict[.string(key)] = value
         }
         return .object(namespaceDict)
     }

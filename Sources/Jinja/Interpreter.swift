@@ -12,35 +12,140 @@ public typealias Context = [String: Value]
 ///
 /// The environment maintains the variable scope during template execution and provides
 /// configuration options that affect rendering behavior.
+///
+/// Rendering reads the environment that you pass but doesn't change it,
+/// so you can render templates with one environment from many threads at the same time.
+/// The environment doesn't synchronize access to its variables, policies, or call depth limit:
+/// don't set a variable, a policy, or ``maximumCallDepth`` on it, or on its parents,
+/// while a render that uses it is in progress.
+/// A value in the environment that keeps its own state,
+/// such as a `cycler` or `joiner` object,
+/// shares that state with every render that uses it.
 public final class Environment: @unchecked Sendable {
     private let parent: Environment?
     private(set) var variables: [String: Value] = [:]
 
-    // Options
+    /// The number of macro and `caller` invocations in progress
+    /// when this environment was created.
+    /// A child environment starts with the depth of its parent.
+    var callDepth: Int
 
-    /// Whether leading spaces and tabs are stripped from the start of a line to a block.
-    /// The default value is `false`.
-    public var lstripBlocks: Bool = false
+    /// Whether this environment is the scope of a render.
+    /// Assignments from the template stop here,
+    /// so that rendering doesn't change the environment that the caller passed.
+    var isRenderScope = false
 
-    /// Whether the first newline after a block is removed.
-    /// This applies to block tags, not variable tags.
-    /// The default value is `false`.
-    public var trimBlocks: Bool = false
+    /// Settings that adjust the behavior of built-in filters.
+    public struct Policies: Sendable {
+        /// The serializer corresponding to Jinja2's `json.dumps_function` policy.
+        public var jsonSerializer: JSON.Serializer
+
+        /// Options corresponding to Jinja2's `json.dumps_kwargs` policy.
+        /// Explicit non-null `tojson` arguments override these options for that call.
+        public var jsonDumpsOptions: JSON.DumpsOptions
+
+        /// Creates policies with Transformers-compatible defaults.
+        public init(
+            jsonSerializer: JSON.Serializer = .standard,
+            jsonDumpsOptions: JSON.DumpsOptions = .init(ensureASCII: false)
+        ) {
+            self.jsonSerializer = jsonSerializer
+            self.jsonDumpsOptions = jsonDumpsOptions
+        }
+
+        /// Plain JSON with non-ASCII characters and insertion order preserved.
+        public static let transformers = Policies()
+
+        /// HTML-safe JSON with sorted keys and non-ASCII characters escaped.
+        public static let jinja2 = Policies(
+            jsonSerializer: .htmlSafe,
+            jsonDumpsOptions: .init(ensureASCII: true, sortKeys: true)
+        )
+    }
+
+    /// Settings that adjust how built-in filters behave.
+    ///
+    /// Policies are inherited from the parent environment until any policy is set.
+    /// Mutating a policy copies all inherited settings into this environment;
+    /// subsequent parent changes do not affect that copy.
+    /// Root environments default to ``Policies/transformers``.
+    /// Set `environment.policies = .jinja2` for sorted, ASCII, HTML-safe JSON.
+    public var policies: Policies {
+        get { policyStorage ?? parent?.policies ?? Environment.defaultPolicies }
+        set { policyStorage = newValue }
+    }
+    private var policyStorage: Policies?
+
+    /// The policies a root environment starts with.
+    public static let defaultPolicies: Policies = .transformers
+
+    /// The maximum number of nested macro and `caller` invocations in a render.
+    ///
+    /// A render that exceeds the limit throws `JinjaError.runtime`.
+    /// The limit exists because Swift can't recover from a stack overflow,
+    /// so a template that recurses without end would crash the process,
+    /// where Jinja2 raises `RecursionError`.
+    ///
+    /// The stack that each nested call takes grows with how deeply the macro body nests blocks.
+    /// Measured on a thread with a 512 KB stack in a release build on arm64,
+    /// a call takes about 3 KB for `{{ r() }}`,
+    /// 6 KB for `{% if n %}{{ r(n - 1) }}{% endif %}`,
+    /// and 19 KB for the type macro of the Hermes 3 tool-use template,
+    /// which recurses from an `elif` branch inside a `for` loop.
+    /// At 20 calls, that macro used 377 KB of the 512 KB,
+    /// so the default of 16 calls takes about 300 KB,
+    /// which leaves room for the frames of the code that renders the template.
+    /// 32 calls of that macro would overflow a 512 KB stack.
+    /// Debug builds take about 2.7 times as much stack per call.
+    ///
+    /// Threads other than the main thread get a 512 KB stack by default on Apple platforms.
+    /// Raise the limit only when the render runs on a thread with a larger stack,
+    /// such as a `Thread` with a larger `stackSize`,
+    /// and allow for the larger frames of debug builds.
+    /// Jinja2 has no limit of its own;
+    /// it allows about 250 nested macro calls under Python's default recursion limit.
+    ///
+    /// A child environment uses its parent's limit until you set its own,
+    /// and a render reads the limit from the environment that you pass.
+    /// A value less than 1 is stored as 1.
+    /// The default value is 16.
+    public var maximumCallDepth: Int {
+        get {
+            // Walk the chain without recursion,
+            // because the depth check runs at the deepest point of a recursive render.
+            var environment: Environment? = self
+            while let current = environment {
+                if let limit = current.maximumCallDepthStorage {
+                    return limit
+                }
+                environment = current.parent
+            }
+            return Environment.defaultMaximumCallDepth
+        }
+        set { maximumCallDepthStorage = Swift.max(1, newValue) }
+    }
+    private var maximumCallDepthStorage: Int?
+
+    /// The call depth limit of an environment whose chain sets none.
+    static let defaultMaximumCallDepth = 16
 
     // MARK: -
 
     /// Creates a new environment with optional parent and initial variables.
     ///
+    /// An environment without a parent starts with the built-in globals,
+    /// such as `range` and `namespace`.
+    ///
     /// - Parameters:
     ///   - parent: The parent environment to inherit variables from
     ///   - initial: The initial variables to set in this environment
-    ///   - includeBuiltIns: Whether to include built-in functions (default: true)
     public init(
         parent: Environment? = nil,
         initial: [String: Value] = [:]
     ) {
         self.parent = parent
         self.variables = initial
+        self.callDepth = parent?.callDepth ?? 0
 
         if parent == nil {
             // Only add built-ins to the root environment to avoid duplication
@@ -78,21 +183,16 @@ public final class Environment: @unchecked Sendable {
     /// Sets a variable in the environment where it was originally defined.
     /// This searches up the environment chain to find where the variable exists
     /// and updates it there, ensuring namespace mutations persist across scopes.
+    ///
+    /// The search stops at the scope of the render.
+    /// A variable defined above that scope gets the new value in that scope,
+    /// so rendering doesn't change the environment that the caller passed.
     func setInChain(name: String, value: Value) {
-        // Check if the variable exists in the current environment's variables
-        if variables[name] != nil {
+        guard variables[name] == nil, !isRenderScope, let parent else {
             self[name] = value
             return
         }
-
-        // Search up the parent chain to find where the variable is defined
-        if let parentEnv = parent {
-            parentEnv.setInChain(name: name, value: value)
-            return
-        }
-
-        // Fallback to setting in the current environment
-        self[name] = value
+        parent.setInChain(name: name, value: value)
     }
 }
 
@@ -107,17 +207,31 @@ enum ControlFlow: Error, Sendable {
 }
 
 /// Executes parsed Jinja template nodes to produce rendered output.
-public enum Interpreter {
+enum Interpreter {
     /// Interprets nodes and renders them to a string using the given environment.
+    ///
+    /// The nodes render in a new child scope of `environment`
+    /// that holds the variables the nodes set,
+    /// so rendering doesn't change `environment`.
     ///
     /// - Parameters:
     ///   - nodes: The AST nodes to interpret and render
     ///   - environment: The execution environment containing variables
     /// - Returns: The rendered template output as a string
     /// - Throws: `RuntimeError` if an error occurs during interpretation
-    public static func interpret(_ nodes: [Node], environment: Environment) throws -> String {
-        // Use the fast path with synchronous environment
-        let env = Environment(initial: environment.variables)
+    static func interpret(_ nodes: [Node], environment: Environment) throws -> String {
+        try interpret(nodes, context: [:], environment: environment)
+    }
+
+    /// Renders nodes in a new child scope of `environment`
+    /// that holds `context` and the variables the nodes set.
+    static func interpret(
+        _ nodes: [Node],
+        context: [String: Value],
+        environment: Environment
+    ) throws -> String {
+        let env = Environment(parent: environment, initial: context)
+        env.isRenderScope = true
         var buffer = ""
         buffer.reserveCapacity(1024)
         try interpret(nodes, env: env, into: &buffer)
@@ -219,7 +333,7 @@ public enum Interpreter {
             } else if let alternate = alternate {
                 return try evaluateExpression(alternate, env: env)
             } else {
-                return .null
+                return .undefined
             }
 
         case let .member(object, property, computed):
@@ -308,106 +422,90 @@ public enum Interpreter {
         case let .for(loopVar, iterable, body, elseBody, test):
             let iterableValue = try evaluateExpression(iterable, env: env)
 
+            // The values that the loop iterates over,
+            // which are also the `loop.previtem`/`loop.nextitem` items,
+            // per Python jinja2 `LoopContext`.
+            var items: [Value]
             switch iterableValue {
-            case let .array(items):
-                if items.isEmpty {
-                    // Execute else block
-                    for node in elseBody {
-                        try interpretNode(node, env: env, into: &buffer)
-                    }
-                } else {
-                    let childEnv = Environment(parent: env)
-                    for (index, item) in items.enumerated() {
-                        // Set loop variables
-                        switch loopVar {
-                        case let .single(varName):
-                            childEnv[varName] = item
-                        case let .tuple(varNames):
-                            if case let .array(tupleItems) = item {
-                                for (i, varName) in varNames.enumerated() {
-                                    let value = i < tupleItems.count ? tupleItems[i] : .undefined
-                                    childEnv[varName] = value
-                                }
-                            }
-                        }
-
-                        childEnv["loop"] = makeLoopObject(index: index, totalCount: items.count)
-                        if let test = test {
-                            let testValue = try evaluateExpression(test, env: childEnv)
-                            if !testValue.isTruthy { continue }
-                        }
-
-                        var shouldBreak = false
-                        for node in body {
-                            do {
-                                try interpretNode(node, env: childEnv, into: &buffer)
-                            } catch ControlFlow.break {
-                                shouldBreak = true
-                                break
-                            } catch ControlFlow.continue {
-                                break  // Break from inner loop (current iteration)
-                            }
-                        }
-                        if shouldBreak { break }
-                    }
-                }
-
+            case let .array(values):
+                items = values
             case let .object(dict):
-                if dict.isEmpty {
-                    for node in elseBody { try interpretNode(node, env: env, into: &buffer) }
-                } else {
-                    let childEnv = Environment(parent: env)
-                    for (index, (key, value)) in dict.enumerated() {
-                        switch loopVar {
-                        case let .single(varName):
-                            // Single variable gets the key
-                            childEnv[varName] = .string(key)
-                        case let .tuple(varNames):
-                            // Tuple unpacking: first gets key, second gets value
-                            if varNames.count >= 1 {
-                                childEnv[varNames[0]] = .string(key)
-                            }
-                            if varNames.count >= 2 {
-                                childEnv[varNames[1]] = value
-                            }
-                            // Set remaining variables to undefined
-                            for i in 2 ..< varNames.count {
-                                childEnv[varNames[i]] = .undefined
-                            }
-                        }
-                        childEnv["loop"] = makeLoopObject(index: index, totalCount: dict.count)
-                        if let test = test {
-                            let testValue = try evaluateExpression(test, env: childEnv)
-                            if !testValue.isTruthy { continue }
-                        }
-                        for node in body { try interpretNode(node, env: childEnv, into: &buffer) }
-                    }
+                // Keys for a single loop variable,
+                // and `[key, value]` pairs for tuple unpacking (`for k, v in d`),
+                // where Jinja2 would unpack each key instead.
+                switch loopVar {
+                case .single:
+                    items = dict.keys.map { Value($0) }
+                case .tuple:
+                    items = dict.map { .array([Value($0.key), $0.value]) }
                 }
             case let .string(str):
-                let chars = str.map { Value.string(String($0)) }
-                if chars.isEmpty {
-                    for node in elseBody { try interpretNode(node, env: env, into: &buffer) }
-                } else {
-                    let childEnv = Environment(parent: env)
-                    for (index, item) in chars.enumerated() {
-                        switch loopVar {
-                        case let .single(varName):
-                            childEnv[varName] = item
-                        case let .tuple(varNames):
-                            for (i, varName) in varNames.enumerated() {
-                                childEnv[varName] = i == 0 ? item : .undefined
-                            }
-                        }
-                        childEnv["loop"] = makeLoopObject(index: index, totalCount: chars.count)
-                        if let test = test {
-                            let testValue = try evaluateExpression(test, env: childEnv)
-                            if !testValue.isTruthy { continue }
-                        }
-                        for node in body { try interpretNode(node, env: childEnv, into: &buffer) }
-                    }
-                }
+                items = str.map { .string(String($0)) }
+            case .undefined:
+                // Jinja2's `Undefined` iterates as an empty sequence.
+                items = []
             default:
                 throw JinjaError.runtime("Cannot iterate over non-iterable value")
+            }
+
+            // Jinja2 computes the loop variables, and whether the `else` block runs,
+            // over the items that pass the test.
+            // The test sees the loop variables, but not this loop's `loop`.
+            // Like Jinja2, the loop tests each item just before the body runs with it,
+            // so the test sees changes that the body makes to a namespace.
+            // When the body reads `loop.last`, `loop.length`, `loop.revindex`,
+            // `loop.revindex0`, or `loop.nextitem`, the loop tests every item first.
+            // Then a test that reads state that the body changes can differ from Jinja2,
+            // which tests later items only when the body reads one of those attributes.
+            let testEnv = Environment(parent: env)
+            var testEachItem = false
+            if let test = test {
+                if bodyReadsLaterItems(body) {
+                    items = try items.filter { item in
+                        try bindLoopVariables(loopVar, to: item, in: testEnv)
+                        return try evaluateExpression(test, env: testEnv).isTruthy
+                    }
+                } else {
+                    testEachItem = true
+                }
+            }
+
+            let childEnv = Environment(parent: env)
+            var index = 0
+            var previtem = Value.undefined
+            for item in items {
+                if testEachItem, let test = test {
+                    try bindLoopVariables(loopVar, to: item, in: testEnv)
+                    if !(try evaluateExpression(test, env: testEnv).isTruthy) { continue }
+                }
+
+                try bindLoopVariables(loopVar, to: item, in: childEnv)
+                childEnv["loop"] = makeLoopObject(
+                    index: index,
+                    previtem: previtem,
+                    items: testEachItem ? nil : items
+                )
+                index += 1
+                previtem = item
+
+                var shouldBreak = false
+                for node in body {
+                    do {
+                        try interpretNode(node, env: childEnv, into: &buffer)
+                    } catch ControlFlow.break {
+                        shouldBreak = true
+                        break
+                    } catch ControlFlow.continue {
+                        break  // Break from inner loop (current iteration)
+                    }
+                }
+                if shouldBreak { break }
+            }
+
+            if index == 0 {
+                for node in elseBody {
+                    try interpretNode(node, env: env, into: &buffer)
+                }
             }
 
         case let .set(target, value, body):
@@ -452,8 +550,13 @@ public enum Interpreter {
             let callableValue = try evaluateExpression(callable, env: env)
 
             let callTimeEnv = Environment(parent: env)
-            callTimeEnv["caller"] = .function { callerArgs, _, _ in
+            callTimeEnv["caller"] = .function { callerArgs, _, callerEnv in
+                // The body looks up variables where the call block is,
+                // but takes its depth and limit from the invocation,
+                // which can be in a later render that saved `caller`.
                 let bodyEnv = Environment(parent: env)
+                bodyEnv.callDepth = try nextCallDepth(after: callerEnv)
+                bodyEnv.maximumCallDepth = callerEnv.maximumCallDepth
                 for (paramName, value) in zip(callerParameters ?? [], callerArgs) {
                     guard case let .identifier(paramName) = paramName else {
                         throw JinjaError.runtime("Caller parameter must be an identifier")
@@ -568,8 +671,8 @@ public enum Interpreter {
 
             if computed {
                 let propertyValue = try evaluateExpression(propertyExpr, env: env)
-                guard case let .string(key) = propertyValue else {
-                    throw JinjaError.runtime("Computed property key must be a string")
+                guard let key = ObjectKey(propertyValue) else {
+                    throw JinjaError.runtime("Computed property key must be a string or integer")
                 }
                 if case var .object(dict) = objectValue {
                     dict[key] = value
@@ -583,7 +686,7 @@ public enum Interpreter {
                     throw JinjaError.runtime("Property assignment requires identifier")
                 }
                 if case var .object(dict) = objectValue {
-                    dict[propertyName] = value
+                    dict[.string(propertyName)] = value
                     // Update the object in the environment
                     if case let .identifier(name) = objectExpr {
                         env.setInChain(name: name, value: .object(dict))
@@ -609,6 +712,18 @@ public enum Interpreter {
         )
     }
 
+    /// Returns the call depth for an invocation from the given environment.
+    ///
+    /// - Throws: `JinjaError.runtime` if the invocation would exceed
+    ///   the environment's ``Environment/maximumCallDepth``.
+    static func nextCallDepth(after env: Environment) throws -> Int {
+        let limit = env.maximumCallDepth
+        guard env.callDepth < limit else {
+            throw JinjaError.runtime("Maximum recursion depth of \(limit) exceeded")
+        }
+        return env.callDepth + 1
+    }
+
     static func callMacro(
         macro: Macro,
         arguments: [Value],
@@ -616,6 +731,7 @@ public enum Interpreter {
         env: Environment
     ) throws -> Value {
         let macroEnv = Environment(parent: env)
+        macroEnv.callDepth = try nextCallDepth(after: env)
 
         let caller = env["caller"]
         if caller != .undefined {
@@ -702,7 +818,7 @@ public enum Interpreter {
             case let .double(n):
                 return .double(-n)
             case let .int(i):
-                return .int(-i)
+                return .int(try checkedInt(Int(0).subtractingReportingOverflow(i), "-(\(i))"))
             default:
                 throw JinjaError.runtime("Cannot negate non-numeric value")
             }
@@ -729,7 +845,10 @@ public enum Interpreter {
             return arr[safeIndex]
 
         case let (.object(obj), .string(key)):
-            return obj[key] ?? .undefined
+            return obj[.string(key)] ?? .undefined
+
+        case let (.object(obj), .int(key)):
+            return obj[.int(key)] ?? .undefined
 
         case let (.string(str), .int(index)):
             let safeIndex = index < 0 ? str.count + index : index
@@ -785,16 +904,63 @@ public enum Interpreter {
         throw JinjaError.runtime("Unknown filter: \(filterName)")
     }
 
-    private static func makeLoopObject(index: Int, totalCount: Int) -> Value {
-        var loopContext: OrderedDictionary<String, Value> = [
+    /// Assigns an item of a for loop to the loop variables.
+    private static func bindLoopVariables(
+        _ loopVar: Statement.LoopVar,
+        to item: Value,
+        in env: Environment
+    ) throws {
+        switch loopVar {
+        case let .single(varName):
+            env[varName] = item
+        case let .tuple(varNames):
+            // Arrays unpack by position, as in Python.
+            guard case let .array(values) = item else {
+                throw JinjaError.runtime(
+                    "Cannot unpack \(typeName(of: item)) into \(varNames.count) loop variables"
+                )
+            }
+            guard values.count == varNames.count else {
+                throw JinjaError.runtime(
+                    "Cannot unpack array of \(values.count) values into \(varNames.count) loop variables"
+                )
+            }
+            for (varName, value) in zip(varNames, values) {
+                env[varName] = value
+            }
+        }
+    }
+
+    /// Returns the `loop` object for an iteration of a for loop.
+    ///
+    /// - Parameters:
+    ///   - index: The zero-based index of the iteration.
+    ///   - previtem: The item of the previous iteration, or `.undefined`.
+    ///   - items: All the items of the loop,
+    ///     or `nil` when the loop tests each item as it reaches it.
+    ///     Without them, `loop` has no `last`, `length`, `revindex`,
+    ///     `revindex0`, or `nextitem`.
+    private static func makeLoopObject(
+        index: Int,
+        previtem: Value,
+        items: [Value]?
+    ) -> Value {
+        var loopContext: OrderedDictionary<ObjectKey, Value> = [
             "index": .int(index + 1),
             "index0": .int(index),
             "first": .boolean(index == 0),
-            "last": .boolean(index == totalCount - 1),
-            "length": .int(totalCount),
-            "revindex": .int(totalCount - index),
-            "revindex0": .int(totalCount - index - 1),
         ]
+        if let items = items {
+            let count = items.count
+            loopContext["last"] = .boolean(index == count - 1)
+            loopContext["length"] = .int(count)
+            loopContext["revindex"] = .int(count - index)
+            loopContext["revindex0"] = .int(count - index - 1)
+        }
+        loopContext["previtem"] = previtem
+        if let items = items {
+            loopContext["nextitem"] = index + 1 < items.count ? items[index + 1] : .undefined
+        }
 
         loopContext["cycle"] = .function { args, _, _ in
             guard !args.isEmpty else { return .string("") }
@@ -803,6 +969,123 @@ public enum Interpreter {
         }
 
         return .object(loopContext)
+    }
+
+    /// The `loop` attributes that Jinja2's `LoopContext` computes
+    /// without the later items of the loop.
+    private static let loopAttributesWithoutLaterItems: Set<String> = [
+        "index", "index0", "first", "previtem", "cycle",
+    ]
+
+    /// Returns whether a for loop body may read a `loop` attribute
+    /// that needs the later items of the loop, such as `loop.last` or `loop.length`.
+    ///
+    /// The check is conservative: any use of `loop` other than an attribute
+    /// in ``loopAttributesWithoutLaterItems`` counts,
+    /// such as `loop['index']` or passing `loop` to a macro.
+    /// The body of a nested for loop doesn't count,
+    /// because its `loop` is the nested loop's.
+    private static func bodyReadsLaterItems(_ nodes: [Node]) -> Bool {
+        nodes.contains { node in
+            switch node {
+            case .text, .comment:
+                return false
+            case let .expression(expr):
+                return readsLaterItems(expr)
+            case let .statement(statement):
+                switch statement {
+                case let .program(nodes), let .generation(nodes):
+                    return bodyReadsLaterItems(nodes)
+                case let .set(target, value, body):
+                    return readsLaterItems(target) || value.map(readsLaterItems) == true
+                        || bodyReadsLaterItems(body)
+                case let .if(test, body, alternate):
+                    return readsLaterItems(test) || bodyReadsLaterItems(body)
+                        || bodyReadsLaterItems(alternate)
+                case let .for(_, iterable, _, elseBody, test):
+                    return readsLaterItems(iterable) || test.map(readsLaterItems) == true
+                        || bodyReadsLaterItems(elseBody)
+                case let .macro(_, _, defaults, body):
+                    return defaults.values.contains(where: readsLaterItems)
+                        || bodyReadsLaterItems(body)
+                case .break, .continue:
+                    return false
+                case let .call(callable, callerArgs, body):
+                    return readsLaterItems(callable)
+                        || (callerArgs ?? []).contains(where: readsLaterItems)
+                        || bodyReadsLaterItems(body)
+                case let .filter(filterExpr, body):
+                    return readsLaterItems(filterExpr) || bodyReadsLaterItems(body)
+                }
+            }
+        }
+    }
+
+    /// Returns whether an expression may read a `loop` attribute
+    /// that needs the later items of the loop.
+    private static func readsLaterItems(_ expr: Expression) -> Bool {
+        switch expr {
+        case let .member(.identifier("loop"), .identifier(name), computed: false):
+            return !loopAttributesWithoutLaterItems.contains(name)
+        case .identifier(let name):
+            return name == "loop"
+        case .string, .number, .integer, .boolean, .null:
+            return false
+        case let .array(values), let .tuple(values):
+            return values.contains(where: readsLaterItems)
+        case let .object(pairs):
+            return pairs.values.contains(where: readsLaterItems)
+        case let .unary(_, operand):
+            return readsLaterItems(operand)
+        case let .binary(_, left, right):
+            return readsLaterItems(left) || readsLaterItems(right)
+        case let .ternary(value, test, alternate):
+            return readsLaterItems(value) || readsLaterItems(test)
+                || alternate.map(readsLaterItems) == true
+        case let .call(callee, args, kwargs):
+            return readsLaterItems(callee) || args.contains(where: readsLaterItems)
+                || kwargs.values.contains(where: readsLaterItems)
+        case let .member(object, property, computed):
+            // The property of `foo.loop` is a name, not a variable.
+            return readsLaterItems(object) || (computed && readsLaterItems(property))
+        case let .slice(object, start, stop, step):
+            return readsLaterItems(object) || [start, stop, step].contains { $0.map(readsLaterItems) == true }
+        case let .filter(operand, _, args, kwargs):
+            return readsLaterItems(operand) || args.contains(where: readsLaterItems)
+                || kwargs.values.contains(where: readsLaterItems)
+        case let .test(operand, _, args, _):
+            return readsLaterItems(operand) || args.contains(where: readsLaterItems)
+        }
+    }
+
+    /// The name of a value's type, for error messages.
+    private static func typeName(of value: Value) -> String {
+        switch value {
+        case .null: return "none"
+        case .undefined: return "undefined"
+        case .boolean: return "boolean"
+        case .int: return "int"
+        case .double: return "float"
+        case .string: return "string"
+        case .array: return "array"
+        case .object: return "object"
+        case .function: return "function"
+        case .macro: return "macro"
+        }
+    }
+
+    /// Returns the start and stop indices of a slice of a sequence of `count` items,
+    /// clamped as Python's `slice.indices` clamps them,
+    /// so that a slice like `[:9223372036854775807]` visits only the items.
+    private static func sliceIndices(start: Value?, stop: Value?, step: Int, count: Int) -> (Int, Int) {
+        func index(_ value: Value?, default defaultIndex: Int) -> Int {
+            guard case let .int(index)? = value else { return defaultIndex }
+            if index < 0 {
+                return Swift.max(count + index, step > 0 ? 0 : -1)
+            }
+            return Swift.min(index, step > 0 ? count : count - 1)
+        }
+        return (index(start, default: step > 0 ? 0 : count - 1), index(stop, default: step > 0 ? count : -1))
     }
 
     private static func evaluateSlice(
@@ -828,19 +1111,7 @@ public enum Interpreter {
         case .array(let items):
             let count = items.count
 
-            let startIdx: Int
-            if let s = startVal, case let .int(val) = s {
-                startIdx = val >= 0 ? val : count + val
-            } else {
-                startIdx = step > 0 ? 0 : count - 1
-            }
-
-            let stopIdx: Int
-            if let s = stopVal, case let .int(val) = s {
-                stopIdx = val >= 0 ? val : count + val
-            } else {
-                stopIdx = step > 0 ? count : -1
-            }
+            let (startIdx, stopIdx) = sliceIndices(start: startVal, stop: stopVal, step: step, count: count)
 
             var result: [Value] = []
             for i in stride(from: startIdx, to: stopIdx, by: step) {
@@ -853,25 +1124,21 @@ public enum Interpreter {
         case .string(let str):
             let count = str.count
 
-            let startIdx: Int
-            if let s = startVal, case let .int(val) = s {
-                startIdx = val >= 0 ? val : count + val
-            } else {
-                startIdx = step > 0 ? 0 : count - 1
-            }
+            let (startIdx, stopIdx) = sliceIndices(start: startVal, stop: stopVal, step: step, count: count)
 
-            let stopIdx: Int
-            if let s = stopVal, case let .int(val) = s {
-                stopIdx = val >= 0 ? val : count + val
-            } else {
-                stopIdx = step > 0 ? count : -1
+            if step == 1 {
+                // A contiguous run of characters; offset each bound once.
+                guard startIdx < stopIdx else { return .string("") }
+                let lower = str.index(str.startIndex, offsetBy: startIdx)
+                let upper = str.index(lower, offsetBy: stopIdx - startIdx)
+                return .string(String(str[lower ..< upper]))
             }
-
+            // Index the characters once, instead of offsetting from the start for each.
+            let characters = Array(str)
             var result = ""
             for i in stride(from: startIdx, to: stopIdx, by: step) {
                 if i >= 0 && i < count {
-                    let index = str.index(str.startIndex, offsetBy: i)
-                    result.append(str[index])
+                    result.append(characters[i])
                 }
             }
             return .string(String(result))

@@ -64,6 +64,20 @@ struct PropertyMembersTests {
         #expect(stripResult == .string("hello world"))
     }
 
+    @Test("String strip with chars")
+    func stringStripWithChars() throws {
+        let value = Value.string("xy</answer>")
+        let result = try PropertyMembers.evaluate(value, "strip")
+
+        guard case let .function(fn) = result else {
+            Issue.record("Expected function")
+            return
+        }
+
+        let stripResult = try fn([.string("</answer>")], [:], Environment())
+        #expect(stripResult == .string("xy"))
+    }
+
     @Test("String lstrip method")
     func stringLstrip() throws {
         let value = Value.string("  hello world  ")
@@ -78,6 +92,20 @@ struct PropertyMembersTests {
         #expect(lstripResult == .string("hello world  "))
     }
 
+    @Test("String lstrip with chars")
+    func stringLstripWithChars() throws {
+        let value = Value.string("///path")
+        let result = try PropertyMembers.evaluate(value, "lstrip")
+
+        guard case let .function(fn) = result else {
+            Issue.record("Expected function")
+            return
+        }
+
+        let lstripResult = try fn([.string("/")], [:], Environment())
+        #expect(lstripResult == .string("path"))
+    }
+
     @Test("String rstrip method")
     func stringRstrip() throws {
         let value = Value.string("  hello world  ")
@@ -90,6 +118,110 @@ struct PropertyMembersTests {
 
         let rstripResult = try fn([], [:], Environment())
         #expect(rstripResult == .string("  hello world"))
+    }
+
+    @Test("String rstrip with chars")
+    func stringRstripWithChars() throws {
+        let value = Value.string("hello...")
+        let result = try PropertyMembers.evaluate(value, "rstrip")
+
+        guard case let .function(fn) = result else {
+            Issue.record("Expected function")
+            return
+        }
+
+        let rstripResult = try fn([.string(".")], [:], Environment())
+        #expect(rstripResult == .string("hello"))
+    }
+
+    @Test("String strip with non-string chars throws")
+    func stringStripNonStringChars() throws {
+        let value = Value.string("  hello  ")
+        let result = try PropertyMembers.evaluate(value, "strip")
+
+        guard case let .function(fn) = result else {
+            Issue.record("Expected function")
+            return
+        }
+
+        #expect(throws: JinjaError.self) {
+            _ = try fn([.int(42)], [:], Environment())
+        }
+    }
+
+    @Test("String lstrip with non-string chars throws")
+    func stringLstripNonStringChars() throws {
+        let value = Value.string("  hello  ")
+        let result = try PropertyMembers.evaluate(value, "lstrip")
+
+        guard case let .function(fn) = result else {
+            Issue.record("Expected function")
+            return
+        }
+
+        #expect(throws: JinjaError.self) {
+            _ = try fn([.boolean(true)], [:], Environment())
+        }
+    }
+
+    @Test("String rstrip with non-string chars throws")
+    func stringRstripNonStringChars() throws {
+        let value = Value.string("  hello  ")
+        let result = try PropertyMembers.evaluate(value, "rstrip")
+
+        guard case let .function(fn) = result else {
+            Issue.record("Expected function")
+            return
+        }
+
+        #expect(throws: JinjaError.self) {
+            _ = try fn([.int(0)], [:], Environment())
+        }
+    }
+
+    @Test("String strip rejects extra arguments")
+    func stringStripRejectsExtraArguments() throws {
+        let value = Value.string("hello")
+        let result = try PropertyMembers.evaluate(value, "strip")
+
+        guard case let .function(fn) = result else {
+            Issue.record("Expected function")
+            return
+        }
+
+        #expect(throws: JinjaError.self) {
+            _ = try fn([.string("x"), .string("y")], [:], Environment())
+        }
+    }
+
+    @Test("String lstrip rejects extra arguments")
+    func stringLstripRejectsExtraArguments() throws {
+        let value = Value.string("hello")
+        let result = try PropertyMembers.evaluate(value, "lstrip")
+
+        guard case let .function(fn) = result else {
+            Issue.record("Expected function")
+            return
+        }
+
+        #expect(throws: JinjaError.self) {
+            _ = try fn([.string("/"), .string("x")], [:], Environment())
+        }
+    }
+
+    @Test("String rstrip rejects extra arguments")
+    func stringRstripRejectsExtraArguments() throws {
+        let value = Value.string("hello")
+        let result = try PropertyMembers.evaluate(value, "rstrip")
+
+        guard case let .function(fn) = result else {
+            Issue.record("Expected function")
+            return
+        }
+
+        #expect(throws: JinjaError.self) {
+            _ = try fn([.string("."), .string("x")], [:], Environment())
+        }
     }
 
     @Test("String split without separator")
@@ -282,7 +414,7 @@ struct PropertyMembersTests {
 
     @Test("Object items method")
     func objectItems() throws {
-        let dict: OrderedDictionary<String, Value> = ["a": .int(1), "b": .int(2)]
+        let dict: OrderedDictionary<ObjectKey, Value> = ["a": .int(1), "b": .int(2)]
         let value = Value.object(dict)
         let result = try PropertyMembers.evaluate(value, "items")
 
@@ -301,7 +433,7 @@ struct PropertyMembersTests {
 
     @Test("Object get method with existing key")
     func objectGetExisting() throws {
-        let dict: OrderedDictionary<String, Value> = ["name": .string("John"), "age": .int(30)]
+        let dict: OrderedDictionary<ObjectKey, Value> = ["name": .string("John"), "age": .int(30)]
         let value = Value.object(dict)
         let result = try PropertyMembers.evaluate(value, "get")
 
@@ -316,7 +448,7 @@ struct PropertyMembersTests {
 
     @Test("Object get method with missing key")
     func objectGetMissing() throws {
-        let dict: OrderedDictionary<String, Value> = ["name": .string("John")]
+        let dict: OrderedDictionary<ObjectKey, Value> = ["name": .string("John")]
         let value = Value.object(dict)
         let result = try PropertyMembers.evaluate(value, "get")
 
@@ -331,7 +463,7 @@ struct PropertyMembersTests {
 
     @Test("Object get method with default value")
     func objectGetWithDefault() throws {
-        let dict: OrderedDictionary<String, Value> = ["name": .string("John")]
+        let dict: OrderedDictionary<ObjectKey, Value> = ["name": .string("John")]
         let value = Value.object(dict)
         let result = try PropertyMembers.evaluate(value, "get")
 
@@ -344,9 +476,9 @@ struct PropertyMembersTests {
         #expect(getResult == .string("default"))
     }
 
-    @Test("Object get method with non-string key")
-    func objectGetNonStringKey() throws {
-        let dict: OrderedDictionary<String, Value> = ["42": .string("answer")]
+    @Test("Object get method with integer key")
+    func objectGetIntegerKey() throws {
+        let dict: OrderedDictionary<ObjectKey, Value> = [42: .string("answer")]
         let value = Value.object(dict)
         let result = try PropertyMembers.evaluate(value, "get")
 
@@ -357,11 +489,15 @@ struct PropertyMembersTests {
 
         let getResult = try fn([.int(42)], [:], Environment())
         #expect(getResult == .string("answer"))
+
+        // Integer keys are distinct from their string representations.
+        let missing = try fn([.string("42")], [:], Environment())
+        #expect(missing == .null)
     }
 
     @Test("Object keys method")
     func objectKeys() throws {
-        let dict: OrderedDictionary<String, Value> = ["a": .int(1), "b": .int(2), "c": .int(3)]
+        let dict: OrderedDictionary<ObjectKey, Value> = ["a": .int(1), "b": .int(2), "c": .int(3)]
         let value = Value.object(dict)
         let result = try PropertyMembers.evaluate(value, "keys")
 
@@ -377,7 +513,7 @@ struct PropertyMembersTests {
 
     @Test("Object values method")
     func objectValues() throws {
-        let dict: OrderedDictionary<String, Value> = ["a": .int(1), "b": .int(2), "c": .int(3)]
+        let dict: OrderedDictionary<ObjectKey, Value> = ["a": .int(1), "b": .int(2), "c": .int(3)]
         let value = Value.object(dict)
         let result = try PropertyMembers.evaluate(value, "values")
 
@@ -393,7 +529,7 @@ struct PropertyMembersTests {
 
     @Test("Object direct property access")
     func objectDirectProperty() throws {
-        let dict: OrderedDictionary<String, Value> = ["foo": .string("bar")]
+        let dict: OrderedDictionary<ObjectKey, Value> = ["foo": .string("bar")]
         let value = Value.object(dict)
         let result = try PropertyMembers.evaluate(value, "foo")
         #expect(result == .string("bar"))
@@ -401,7 +537,7 @@ struct PropertyMembersTests {
 
     @Test("Object undefined property")
     func objectUndefinedProperty() throws {
-        let dict: OrderedDictionary<String, Value> = ["foo": .string("bar")]
+        let dict: OrderedDictionary<ObjectKey, Value> = ["foo": .string("bar")]
         let value = Value.object(dict)
         let result = try PropertyMembers.evaluate(value, "nonexistent")
         #expect(result == .undefined)
@@ -434,7 +570,7 @@ struct PropertyMembersTests {
 
     @Test("Object get with no key argument throws")
     func objectGetNoKey() throws {
-        let dict: OrderedDictionary<String, Value> = ["a": .int(1)]
+        let dict: OrderedDictionary<ObjectKey, Value> = ["a": .int(1)]
         let value = Value.object(dict)
         let result = try PropertyMembers.evaluate(value, "get")
 
@@ -515,5 +651,90 @@ struct PropertyMembersTests {
         let value = Value.function { _, _, _ in .null }
         let result = try PropertyMembers.evaluate(value, "someProperty")
         #expect(result == .undefined)
+    }
+
+    // MARK: - String format and join
+
+    // Expected values come from Jinja2 3.1.6.
+    @Test(
+        "String format and join match Jinja2",
+        arguments: [
+            ("{{ '{} and {}'.format('a', 'b') }}", "a and b"),
+            ("{{ '{1}{0}{1}'.format('a', 'b') }}", "bab"),
+            ("{{ '{x}-{y}'.format(x=1, y=2.5) }}", "1-2.5"),
+            ("{{ '{{}} {{{}}}'.format(1) }}", "{} {1}"),
+            ("{{ '<｜hy_eos{}｜>'.format(':opensource') }}", "<｜hy_eos:opensource｜>"),
+            ("{{ '{}|{}|{}'.format(true, false, none) }}", "True|False|None"),
+            (
+                "{{ '{}|{}|{}|{}'.format(10000000000000000.0, 0.1, 1.0, 1234567890123456.0) }}",
+                "1e+16|0.1|1.0|1234567890123456.0"
+            ),
+            ("{{ '{}'.format([1, 'a', true, none, 1.5]) }}", "[1, 'a', True, None, 1.5]"),
+            ("{{ '{}'.format({'a': [1], 2: \"it's\"}) }}", "{'a': [1], 2: \"it's\"}"),
+            ("{{ '{}'.format(['a\"b', 'g\\nh\\\\']) }}", "['a\"b', 'g\\nh\\\\']"),
+            ("{{ '[{}]'.format(missing) }}", "[]"),
+            ("{{ '{0!r}|{0!s}|{0:}'.format('a') }}", "'a'|a|a"),
+            ("{{ '{!r}'.format('a\\nb') }}", "'a\\nb'"),
+            ("{{ '{!r}'.format('\u{00A0}\u{200B}\u{7F}é') }}", "'\\xa0\\u200b\\x7fé'"),
+            ("{% macro m() %}{% endmacro %}{{ '{}'.format(m) }}", "<Macro 'm'>"),
+            ("{{ '{}'.format('x', 'y', z=1) }}", "x"),
+            ("{{ ', '.join(['a', 'b']) }}", "a, b"),
+            ("{{ '-'.join('abc') }}", "a-b-c"),
+            ("{{ '-'.join({'a': 1, 'b': 2}) }}", "a-b"),
+            ("{{ '[' ~ ''.join([]) ~ ']' }}", "[]"),
+            ("{{ ''.join(['c', 'A', 'b', 'D']|sort) }}", "AbcD"),
+        ]
+    )
+    func stringFormatAndJoin(source: String, expected: String) throws {
+        #expect(try Template(source).render([:]) == expected)
+    }
+
+    // Jinja2 3.1.6 raises for each of these, except the first three:
+    // swift-jinja rejects format specs, the `!a` conversion, and attribute access
+    // instead of rendering them differently.
+    @Test(
+        "String format and join reject invalid or unsupported input",
+        arguments: [
+            ("{{ '{:>10}'.format(1) }}", "format() doesn't support the format spec ':>10'"),
+            ("{{ '{!a}'.format(1) }}", "format() doesn't support the conversion '!a'"),
+            ("{{ '{0.real}'.format(1) }}", "format() doesn't support attribute or item access in field '{0.real}'"),
+            (
+                "{{ '{0} {}'.format(1, 2) }}",
+                "cannot switch from manual field specification to automatic field numbering"
+            ),
+            (
+                "{{ '{} {0}'.format(1, 2) }}",
+                "cannot switch from automatic field numbering to manual field specification"
+            ),
+            ("{{ '{2}'.format(1) }}", "Replacement index 2 out of range for positional args tuple"),
+            ("{{ '{x}'.format() }}", "format() is missing keyword argument 'x'"),
+            ("{{ 'a}b'.format() }}", "Single '}' encountered in format string"),
+            ("{{ 'a{b'.format() }}", "expected '}' before end of string"),
+            ("{{ '{!rr}'.format(1) }}", "expected ':' after conversion specifier"),
+            ("{{ ','.join([1]) }}", "join() sequence item 0: expected a string"),
+            ("{{ ','.join('a', 'b') }}", "join() takes exactly one argument (2 given)"),
+            ("{{ ','.join(iterable=['a']) }}", "join() takes no keyword arguments"),
+            ("{{ ','.join(none) }}", "join() can only join an iterable"),
+        ]
+    )
+    func stringFormatAndJoinErrors(source: String, message: String) throws {
+        let template = try Template(source)
+        do {
+            _ = try template.render([:])
+            Issue.record("Expected a runtime error for \(source)")
+        } catch JinjaError.runtime(let thrown) {
+            #expect(thrown == message)
+        }
+    }
+
+    @Test("String format rejects a function value")
+    func stringFormatFunction() throws {
+        let template = try Template("{{ '{}'.format(f) }}")
+        do {
+            _ = try template.render(["f": .function { _, _, _ in .null }])
+            Issue.record("Expected a runtime error")
+        } catch JinjaError.runtime(let message) {
+            #expect(message == "format() can't convert a function to a string")
+        }
     }
 }

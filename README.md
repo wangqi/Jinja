@@ -342,6 +342,62 @@ let context: [String: Value] = [
 let result = try template.render(context)
 ```
 
+#### JSON output
+
+The `tojson` filter writes JSON the way Python's `json.dumps` does,
+so a chat template renders the same text here as it does in
+[transformers](https://github.com/huggingface/transformers).
+Like transformers, the defaults are `ensure_ascii=False` and `sort_keys=False`:
+non-ASCII characters are kept as they are,
+and object keys stay in insertion order.
+
+```swift
+let template = try Template("{{ tool | tojson }}")
+let tool: Value = ["name": "read", "description": "Use offset/limit — see docs"]
+try template.render(["tool": tool])
+// {"name": "read", "description": "Use offset/limit — see docs"}
+```
+
+The environment's typed `policies` expose the behavior of Jinja2's
+[`json.dumps_function` and `json.dumps_kwargs`](https://jinja.palletsprojects.com/en/stable/api/#policies)
+through `JSON.Serializer` and `JSON.DumpsOptions`.
+Use the `.jinja2` preset for sorted keys, escaped non-ASCII characters,
+and HTML-safe escaping of `<`, `>`, `&`, and `'`:
+
+```swift
+let environment = Environment()
+environment.policies = .jinja2
+try template.render(["tool": tool], environment: environment)
+```
+
+The default preset is `.transformers`.
+You can customize either preset with typed options:
+
+```swift
+environment.policies = .transformers
+environment.policies.jsonDumpsOptions.sortKeys = true
+environment.policies.jsonDumpsOptions.indent = 2
+environment.policies.jsonDumpsOptions.separators = (item: ",", key: ": ")
+environment.policies.jsonSerializer = .htmlSafe
+```
+
+`JSON.Serializer` supports `.standard`, `.htmlSafe`,
+and `.custom` with a `@Sendable (Value, JSON.DumpsOptions) throws -> String` closure.
+Custom serializers receive the resolved options, including template overrides:
+
+```swift
+environment.policies.jsonSerializer = .custom { value, options in
+    try JSON.dumps(value, options: options)
+}
+```
+
+The `tojson` filter's non-null `indent` and `ensure_ascii` arguments
+override the policy options for that call without changing the environment.
+An indentation of zero or less inserts newlines without leading spaces.
+Policies are inherited from the parent environment until a child changes a policy,
+which copies all inherited settings into that child.
+The serializer is also available directly as `JSON.dumps(_:options:)`.
+
 ### Tests
 
 Jinja provides
@@ -404,6 +460,27 @@ let template = try Template("""
         {{ item }}
     {% endfor %}
     """, with: options)
+```
+
+### Macro Call Depth
+
+A render throws `JinjaError.runtime` when macro and `caller` invocations
+nest deeper than the environment's `maximumCallDepth`, which is 16 by default,
+because Swift can't recover from a stack overflow.
+Threads other than the main thread get a 512 KB stack by default on Apple platforms,
+and debug builds use about 2.7 times as much stack per call as release builds.
+Raise the limit only when you render on a thread with a larger stack:
+
+```swift
+let environment = Environment()
+environment.maximumCallDepth = 64
+
+let thread = Thread {
+    let output = try? template.render(context, environment: environment)
+    // Use the output.
+}
+thread.stackSize = 8 * 1024 * 1024
+thread.start()
 ```
 
 ### Value Types
@@ -552,6 +629,12 @@ if you are looking for a place to start!
 Please ensure your code passes the build and test suite
 before submitting a pull request.
 You can run the tests with `swift test`.
+
+Golden-file tests compare swift-jinja with Jinja2.
+They need a corpus that is built from pinned sources,
+so a plain `swift test` skips them; CI runs them on pull requests.
+To run them locally, or to update the known differences after your change,
+see [Tools/conformance/README.md](Tools/conformance/README.md).
 
 [good-first-issues]: https://github.com/huggingface/swift-jinja/issues?q=is%3Aissue%20state%3Aopen%20label%3A%22good%20first%20issue%22
 

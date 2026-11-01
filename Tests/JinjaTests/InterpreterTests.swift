@@ -82,7 +82,7 @@ struct InterpreterTests {
 
     // MARK: - Ternary without alternate
 
-    @Test("Ternary without alternate returns null")
+    @Test("Ternary without alternate returns undefined")
     func ternaryWithoutAlternate() throws {
         let template = try Template("{{ x if false }}")
         let result = try template.render([:])
@@ -187,6 +187,96 @@ struct InterpreterTests {
         #expect(result == "empty")
     }
 
+    // MARK: - For loop loop.previtem / loop.nextitem
+
+    @Test("loop.previtem on array")
+    func loopPrevitemArray() throws {
+        let template = try Template(
+            "{% for x in items %}[{{ loop.previtem }}|{{ x }}]{% endfor %}"
+        )
+        let result = try template.render([
+            "items": .array([.int(1), .int(2), .int(3)])
+        ])
+        #expect(result == "[|1][1|2][2|3]")
+    }
+
+    @Test("loop.nextitem on array")
+    func loopNextitemArray() throws {
+        let template = try Template(
+            "{% for x in items %}[{{ x }}|{{ loop.nextitem }}]{% endfor %}"
+        )
+        let result = try template.render([
+            "items": .array([.int(1), .int(2), .int(3)])
+        ])
+        #expect(result == "[1|2][2|3][3|]")
+    }
+
+    @Test("loop.previtem is undefined at the first iteration")
+    func loopPrevitemFirstIndexUndefined() throws {
+        // Real-world chat templates guard with `if loop.previtem['role'] != 'assistant'`
+        // and rely on `.undefined` being falsy at the first iteration.
+        let template = try Template(
+            "{% for x in items %}{{ 'has' if loop.previtem else 'none' }},{% endfor %}"
+        )
+        let result = try template.render(["items": .array([.int(1), .int(2)])])
+        #expect(result == "none,has,")
+    }
+
+    @Test("loop.nextitem is undefined at the last iteration")
+    func loopNextitemLastIndexUndefined() throws {
+        let template = try Template(
+            "{% for x in items %}{{ 'has' if loop.nextitem else 'none' }},{% endfor %}"
+        )
+        let result = try template.render(["items": .array([.int(1), .int(2)])])
+        #expect(result == "has,none,")
+    }
+
+    @Test("loop.previtem returns falsy values rather than reporting undefined")
+    func loopPrevitemFalsyValues() throws {
+        // Falsy items (`0`, `""`, `false`) must come through as defined —
+        // truthiness alone can't distinguish them from `.undefined`.
+        let template = try Template(
+            "{% for x in items %}{{ 'def' if loop.previtem is defined else 'undef' }},{% endfor %}"
+        )
+        let result = try template.render([
+            "items": .array([.int(0), .string(""), .boolean(false)])
+        ])
+        #expect(result == "undef,def,def,")
+    }
+
+    @Test("loop.previtem on dict with tuple unpacking returns [key, value]")
+    func loopPrevitemDictTuple() throws {
+        // Under tuple unpacking, `loop.previtem` should be a `(key, value)` 2-tuple,
+        // matching Python jinja2's `LoopContext.previtem`.
+        let template = try Template(
+            "{% for k, v in obj.items() %}{% if not loop.first %}<{{ loop.previtem[0] }}={{ loop.previtem[1] }}>{% endif %}{% endfor %}"
+        )
+        let result = try template.render([
+            "obj": .object(["a": .int(1), "b": .int(2), "c": .int(3)])
+        ])
+        #expect(result == "<a=1><b=2>")
+    }
+
+    @Test("loop.previtem on dict with single-var iteration returns key")
+    func loopPrevitemDictSingle() throws {
+        let template = try Template(
+            "{% for k in obj %}[{{ loop.previtem }}|{{ k }}]{% endfor %}"
+        )
+        let result = try template.render([
+            "obj": .object(["a": .int(1), "b": .int(2), "c": .int(3)])
+        ])
+        #expect(result == "[|a][a|b][b|c]")
+    }
+
+    @Test("loop.previtem and loop.nextitem on string iteration")
+    func loopPrevitemNextitemString() throws {
+        let template = try Template(
+            "{% for c in s %}[{{ loop.previtem }}{{ c }}{{ loop.nextitem }}]{% endfor %}"
+        )
+        let result = try template.render(["s": .string("abc")])
+        #expect(result == "[ab][abc][bc]")
+    }
+
     // MARK: - For loop with test
 
     @Test("Filtered for loop")
@@ -194,6 +284,156 @@ struct InterpreterTests {
         let template = try Template("{% for x in items if x > 2 %}{{ x }}{% endfor %}")
         let result = try template.render(["items": .array([.int(1), .int(2), .int(3), .int(4)])])
         #expect(result == "34")
+    }
+
+    @Test("Filtered for loop computes loop variables over the filtered items")
+    func filteredForLoopVariables() throws {
+        let template = try Template(
+            "{% for x in items if x > 1 %}{{ x }}:{{ loop.index }}{{ loop.index0 }}{{ loop.length }}{{ loop.revindex }}{{ loop.revindex0 }}{{ 'F' if loop.first }}{{ 'L' if loop.last }}{{ loop.cycle('a', 'b') }};{% endfor %}"
+        )
+        let result = try template.render([
+            "items": .array([.int(1), .int(2), .int(3), .int(1), .int(4), .int(0)])
+        ])
+        #expect(result == "2:10332Fa;3:21321b;4:32310La;")
+    }
+
+    @Test("Filtered for loop computes loop.previtem and loop.nextitem over the filtered items")
+    func filteredForLoopPrevitemNextitem() throws {
+        let template = try Template(
+            "{% for x in items if x > 1 %}{{ loop.previtem }}-{{ loop.nextitem }},{% endfor %}"
+        )
+        let result = try template.render([
+            "items": .array([.int(1), .int(2), .int(3), .int(1), .int(4), .int(0)])
+        ])
+        #expect(result == "-3,2-4,3-,")
+    }
+
+    @Test("Filtered for loop runs the else block when the test rejects every item")
+    func filteredForLoopElse() throws {
+        let template = try Template("{% for x in items if x > 10 %}{{ x }}{% else %}empty{% endfor %}")
+        let result = try template.render(["items": .array([.int(1), .int(2), .int(3)])])
+        #expect(result == "empty")
+    }
+
+    @Test("Filtered for loop skips the else block when an item passes the test")
+    func filteredForLoopNoElse() throws {
+        let template = try Template("{% for x in items if x > 1 %}{{ x }}{% else %}empty{% endfor %}")
+        let result = try template.render(["items": .array([.int(1), .int(2), .int(3)])])
+        #expect(result == "23")
+    }
+
+    @Test(
+        "Filtered for loop computes loop variables for every kind of iterable",
+        arguments: [
+            (
+                "{% for k, v in items if v %}{{ k }}{{ loop.index }}/{{ loop.length }}{{ '!' if loop.last }}{% endfor %}",
+                Value.array([
+                    .array([.string("a"), .int(1)]),
+                    .array([.string("b"), .int(0)]),
+                    .array([.string("c"), .int(2)]),
+                    .array([.string("d"), .int(0)]),
+                ])
+            ),
+            (
+                "{% for k in items if items[k] %}{{ k }}{{ loop.index }}/{{ loop.length }}{{ '!' if loop.last }}{% endfor %}",
+                Value.object(["a": .int(1), "b": .int(0), "c": .int(2), "d": .int(0)])
+            ),
+            (
+                "{% for k, v in items.items() if v %}{{ k }}{{ loop.index }}/{{ loop.length }}{{ '!' if loop.last }}{% endfor %}",
+                Value.object(["a": .int(1), "b": .int(0), "c": .int(2), "d": .int(0)])
+            ),
+            (
+                "{% for k in items if k != '-' %}{{ k }}{{ loop.index }}/{{ loop.length }}{{ '!' if loop.last }}{% endfor %}",
+                Value.string("a-c-")
+            ),
+        ]
+    )
+    func filteredForLoopVariablesForEachIterable(source: String, items: Value) throws {
+        let template = try Template(source)
+        let result = try template.render(["items": items])
+        #expect(result == "a1/2c2/2!")
+    }
+
+    @Test("Filtered for loop sets loop.last on the last item that passes the test")
+    func filteredForLoopLastSeparator() throws {
+        // Mistral-7B-Instruct-v0.3 skips a tool's "return" key this way;
+        // a separator after the last item produces malformed JSON.
+        let template = try Template(
+            "{% for k in obj if k != 'return' %}\"{{ k }}\"{% if not loop.last %}, {% endif %}{% endfor %}"
+        )
+        let result = try template.render([
+            "obj": .object(["a": .int(1), "b": .int(2), "return": .int(3)])
+        ])
+        #expect(result == "\"a\", \"b\"")
+    }
+
+    @Test("Filtered for loop test sees the enclosing loop's loop variable")
+    func filteredForLoopTestOuterLoop() throws {
+        let template = try Template(
+            "{% for o in [1, 2] %}{% for x in items if loop.index == 1 %}{{ x }}{% endfor %};{% endfor %}"
+        )
+        let result = try template.render(["items": .array([.int(10), .int(20), .int(30)])])
+        #expect(result == "102030;;")
+    }
+
+    @Test("Filtered for loop test doesn't see its own loop variable")
+    func filteredForLoopTestOwnLoopUndefined() throws {
+        let template = try Template("{% for x in items if loop is defined %}{{ x }}{% endfor %}")
+        let result = try template.render(["items": .array([.int(1), .int(2)])])
+        #expect(result == "")
+    }
+
+    @Test("Filtered for loop test doesn't see assignments in the loop body")
+    func filteredForLoopTestIgnoresBodyAssignments() throws {
+        let template = try Template(
+            "{% set y = 0 %}{% for x in items if x != y %}{% set y = x %}{{ x }}{% endfor %}"
+        )
+        let result = try template.render(["items": .array([.int(0), .int(1), .int(1), .int(2)])])
+        #expect(result == "112")
+    }
+
+    @Test("Filtered for loop with continue keeps the filtered loop.index")
+    func filteredForLoopContinue() throws {
+        let template = try Template(
+            "{% for x in items if x > 1 %}{% if x == 3 %}{% continue %}{% endif %}{{ x }}{{ loop.index }}{% endfor %}"
+        )
+        let result = try template.render([
+            "items": .array([.int(1), .int(2), .int(3), .int(1), .int(4)])
+        ])
+        #expect(result == "2143")
+    }
+
+    @Test("Filtered for loop computes loop variables that don't need later items")
+    func filteredForLoopVariablesWithoutLaterItems() throws {
+        let template = try Template(
+            "{% for x in items if x > 1 %}{{ loop.index }}{{ loop.index0 }}{{ 'F' if loop.first }}{{ loop.previtem }}{{ loop.cycle('a', 'b') }};{% endfor %}"
+        )
+        let result = try template.render([
+            "items": .array([.int(1), .int(2), .int(3), .int(1), .int(4)])
+        ])
+        #expect(result == "10Fa;212b;323a;")
+    }
+
+    @Test(
+        "Filtered for loop tests each item with the state that the body leaves",
+        arguments: [
+            // The test sees each change that the body makes to the namespace.
+            ("{{ x }}", [1, 2, 3, 4], "12"),
+            ("{{ x }}{{ loop.index }}", [1, 2, 3, 4], "1122"),
+            // `loop.last` in a nested loop is the nested loop's.
+            ("{% for y in [0] %}{{ loop.last }}{% endfor %}{{ x }}", [1, 2, 3, 4], "True1True2"),
+            ("{{ x }}", [], "empty"),
+            // `loop.length` needs every item,
+            // so Jinja2 tests them all before the body changes the namespace.
+            ("{{ x }}{{ loop.length }}", [1, 2, 3, 4], "14243444"),
+        ]
+    )
+    func filteredForLoopStatefulTest(body: String, items: [Int], expected: String) throws {
+        let template = try Template(
+            "{% set ns = namespace(n=0) %}{% for x in items if ns.n < 2 %}\(body){% set ns.n = ns.n + 1 %}{% else %}empty{% endfor %}"
+        )
+        let result = try template.render(["items": .array(items.map { .int($0) })])
+        #expect(result == expected)
     }
 
     // MARK: - Set with body
@@ -391,6 +631,24 @@ struct InterpreterTests {
         #expect(result == "42")
     }
 
+    @Test("Namespace mutation in macro loop")
+    func namespaceMutationInMacroLoop() throws {
+        let template = try Template(
+            """
+            {%- macro fmt(items) -%}
+              {%- set ns = namespace(found_first=false) -%}
+              {%- for k in items -%}
+                {%- if ns.found_first %},{% endif -%}
+                {%- set ns.found_first = true -%}{{ k }}
+              {%- endfor -%}
+            {%- endmacro -%}
+            {{ fmt(['a', 'b', 'c']) }}
+            """
+        )
+        let result = try template.render([:])
+        #expect(result.trimmingCharacters(in: .whitespacesAndNewlines) == "a,b,c")
+    }
+
     @Test("Invalid assignment target throws")
     func invalidAssignmentTarget() throws {
         #expect(throws: JinjaError.self) {
@@ -438,6 +696,113 @@ struct InterpreterTests {
         }
     }
 
+    @Test("For loop over none throws")
+    func forLoopNone() throws {
+        let template = try Template("{% for x in items %}{{ x }}{% endfor %}")
+        #expect(throws: JinjaError.self) {
+            try template.render(["items": .null])
+        }
+    }
+
+    @Test("For loop over undefined runs no iterations")
+    func forLoopUndefined() throws {
+        let template = try Template("[{% for x in missing %}{{ x }}{% endfor %}]")
+        let result = try template.render([:])
+        #expect(result == "[]")
+    }
+
+    @Test("For loop over undefined runs the else block")
+    func forLoopUndefinedElse() throws {
+        let template = try Template("{% for x in missing %}{{ x }}{% else %}empty{% endfor %}")
+        let result = try template.render([:])
+        #expect(result == "empty")
+    }
+
+    @Test("For loop over undefined attribute runs the else block")
+    func forLoopUndefinedAttributeElse() throws {
+        let template = try Template(
+            "{% for x in m.tool_calls %}{{ x }}{% else %}empty{% endfor %}"
+        )
+        let result = try template.render(["m": .object(["role": .string("assistant")])])
+        #expect(result == "empty")
+    }
+
+    @Test("For loop over undefined with tuple unpacking runs the else block")
+    func forLoopUndefinedTupleElse() throws {
+        let template = try Template("{% for a, b in missing %}{{ a }}{% else %}empty{% endfor %}")
+        let result = try template.render([:])
+        #expect(result == "empty")
+    }
+
+    @Test("For loop over object with break")
+    func forLoopObjectBreak() throws {
+        let template = try Template("{% for k in obj %}{{ k }}{% break %}{% endfor %}")
+        let result = try template.render(["obj": .object(["a": .int(1), "b": .int(2)])])
+        #expect(result == "a")
+    }
+
+    @Test("For loop over object with continue")
+    func forLoopObjectContinue() throws {
+        let template = try Template(
+            "{% for k in obj %}{% if k == 'a' %}{% continue %}{% endif %}{{ k }}{% endfor %}"
+        )
+        let result = try template.render(["obj": .object(["a": .int(1), "b": .int(2)])])
+        #expect(result == "b")
+    }
+
+    @Test("For loop over string with break")
+    func forLoopStringBreak() throws {
+        let template = try Template(
+            "{% for c in s %}{{ c }}{% if c == 'b' %}{% break %}{% endif %}{% endfor %}"
+        )
+        let result = try template.render(["s": .string("abc")])
+        #expect(result == "ab")
+    }
+
+    @Test("For loop over string with continue")
+    func forLoopStringContinue() throws {
+        let template = try Template(
+            "{% for c in s %}{% if c == 'b' %}{% continue %}{% endif %}{{ c }}{% endfor %}"
+        )
+        let result = try template.render(["s": .string("abc")])
+        #expect(result == "ac")
+    }
+
+    @Test(
+        "Loop variables are the same for every kind of iterable",
+        arguments: [
+            Value.array([.int(1), .int(2), .int(3)]),
+            Value.object(["a": .int(1), "b": .int(2), "c": .int(3)]),
+            Value.string("abc"),
+        ]
+    )
+    func loopVariablesForEachIterable(items: Value) throws {
+        let template = try Template(
+            "{% for x in items %}{{ loop.index }}{{ loop.index0 }}{{ loop.length }}{{ loop.revindex }}{{ loop.revindex0 }}{{ 'F' if loop.first }}{{ 'L' if loop.last }}{{ loop.cycle('x', 'y') }};{% endfor %}"
+        )
+        let result = try template.render(["items": items])
+        #expect(result == "10332Fx;21321y;32310Lx;")
+    }
+
+    @Test(
+        "For loop tuple unpacking throws when an item can't be unpacked",
+        arguments: [
+            // Items that aren't arrays.
+            Value.array([.int(1), .int(2)]),
+            Value.array([.object(["k": .string("a")])]),
+            Value.string("ab"),
+            // Arrays with too few or too many values.
+            Value.array([.array([.int(1)]), .array([.int(2)])]),
+            Value.array([.array([.int(1), .int(2), .int(3)])]),
+        ]
+    )
+    func forLoopTupleUnpackingMismatchThrows(items: Value) throws {
+        let template = try Template("{% for a, b in items %}{{ a }}{{ b }}{% endfor %}")
+        #expect(throws: JinjaError.self) {
+            try template.render(["items": items])
+        }
+    }
+
     @Test("For loop with loop.cycle")
     func forLoopCycle() throws {
         let template = try Template("{% for i in range(4) %}{{ loop.cycle('a', 'b') }}{% endfor %}")
@@ -451,7 +816,7 @@ struct InterpreterTests {
             "{% for i in [10, 20, 30] %}{{ loop.index }}-{{ loop.index0 }}-{{ loop.first }}-{{ loop.last }}-{{ loop.length }}-{{ loop.revindex }}-{{ loop.revindex0 }} {% endfor %}"
         )
         let result = try template.render([:])
-        #expect(result == "1-0-true-false-3-3-2 2-1-false-false-3-2-1 3-2-false-true-3-1-0 ")
+        #expect(result == "1-0-True-False-3-3-2 2-1-False-False-3-2-1 3-2-False-True-3-1-0 ")
     }
 
     @Test("Call block with macro")

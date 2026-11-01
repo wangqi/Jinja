@@ -71,6 +71,27 @@ struct TemplateTests {
         #expect(try rendered == Template(nodes: nodes).render(context))
     }
 
+    @Test("Literal closing braces in text are not close-expression delimiters")
+    func literalClosingBracesInText() throws {
+        // https://github.com/huggingface/swift-jinja/issues/63
+        let string = #"{"parameters": {}}"#
+        let context: Context = [:]
+
+        let tokens = try Lexer.tokenize(string)
+        #expect(
+            tokens == [
+                Token(kind: .text, value: #"{"parameters": {}}"#, position: 0),
+                Token(kind: .eof, value: "", position: 18),
+            ]
+        )
+
+        let nodes = try Parser.parse(tokens)
+        #expect(nodes == [.text(#"{"parameters": {}}"#)])
+
+        let rendered = try Template(string).render(context)
+        #expect(rendered == #"{"parameters": {}}"#)
+    }
+
     @Test("Text nodes")
     func textNodes() throws {
         let string = #"0{{ 'A' }}1{{ 'B' }}{{ 'C' }}2{{ 'D' }}3"#
@@ -126,44 +147,31 @@ struct TemplateTests {
     /// Whitespace before a template's FIRST `{{-` / `{%-` must be stripped, exactly as it is
     /// anywhere else in the template.
     ///
-    /// `Lexer.preprocess` used to run the capturing rule (`([^\{])\s*\{\{-`) before the
-    /// start-of-string rule (`^\s*\{\{-`). The capturing rule matches at offset 0 too — its
-    /// `([^\{])` binds the template's first character — and consumes the `-`, so the `^` rule
-    /// could never fire and exactly one leading whitespace character survived.
+    /// The fork's old regex `Lexer.preprocess` left one leading whitespace character when the
+    /// template opened with "\n{%- …", so a GGUF chat template beginning that way produced a prompt
+    /// with a stray leading newline (fixed in the fork 2026-08-29). Upstream replaced `preprocess`
+    /// with whitespace control in the lexer (#93), which absorbs that fix; these cases stay as the
+    /// fork's regression check. Expected values are Python Jinja2's output.
     ///
-    /// Asserted on TOKENS, not on rendered text: every integration test in this file compares
-    /// with `.trimmingCharacters(in: .whitespacesAndNewlines)` on both sides, so none of them can
-    /// see a leading newline at all.
+    /// Compared WITHOUT trimming: every integration test in this file trims both sides, so none of
+    /// them can see a leading newline at all.
     ///
-    /// wangqi modified 2026-08-29
+    /// wangqi modified 2026-11-01: render-only (upstream #100 changed token positions), and
+    /// "{\n{%- if" now renders "{X" as Jinja2 does (the old "{ X" was the regex workaround's
+    /// token-merge guard).
     @Test("Leading whitespace before {{- is stripped")
     func leadingWhitespaceBeforeOpenExpression() throws {
-        let string = "\n{{- 'A' -}} B"
         let context: Context = [:]
-
-        let tokens = try Lexer.tokenize(string)
-        #expect(
-            tokens == [
-                Token(kind: .openExpression, value: "{{", position: 0),
-                Token(kind: .string, value: "A", position: 3),
-                Token(kind: .closeExpression, value: "}}", position: 7),
-                Token(kind: .text, value: "B", position: 9),
-                Token(kind: .eof, value: "", position: 10),
-            ]
-        )
-
-        #expect(try Template(string).render(context) == "AB")
+        #expect(try Template("\n{{- 'A' -}} B").render(context) == "AB")
     }
 
-    /// The same rule for a statement delimiter, and the merge guard it must not break: a literal
-    /// `{` directly before the delimiter still keeps one space, or `{ {%` would lex as `{{` + `%`.
-    @Test("Leading whitespace before {%- is stripped, and the '{' merge guard survives")
+    @Test("Leading whitespace before {%- is stripped, and a literal '{' does not merge with it")
     func leadingWhitespaceBeforeOpenStatement() throws {
         let context: Context = [:]
 
         #expect(try Template("\n{%- if true -%}\nX{%- endif -%}").render(context) == "X")
         #expect(try Template("  \n\n{%- if true %}X{% endif %}").render(context) == "X")
-        #expect(try Template("{\n{%- if true %}X{% endif %}").render(context) == "{ X")
+        #expect(try Template("{\n{%- if true %}X{% endif %}").render(context) == "{X")
     }
 
     @Test("Boolean literals")
@@ -214,10 +222,35 @@ struct TemplateTests {
 
         // Check result of template initialized with string
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|true|false|true|false|")
+        #expect(rendered == "|True|False|True|False|")
 
         // Check result of template initialized with nodes
         #expect(try rendered == Template(nodes: nodes).render(context))
+    }
+
+    // Expected strings were rendered with jinja2 3.1.6.
+    @Test(
+        "Booleans and none print as Python's str() writes them",
+        arguments: [
+            ("{{ true }}|{{ false }}|{{ none }}", "True|False|None"),
+            ("{{ true|string }}|{{ false|string }}|{{ none|string }}", "True|False|None"),
+            ("{{ [true, false, none]|join(', ') }}", "True, False, None"),
+            ("{{ items|join(',', attribute='v') }}", "True,None"),
+            ("{{ 'x' ~ true ~ false ~ none }}", "xTrueFalseNone"),
+            ("{{ '%s %s %s'|format(true, false, none) }}", "True False None"),
+            ("{{ value }}|{{ value|default('d') }}|{{ value|default('d', true) }}", "None|None|d"),
+            ("{{ value|default('', true)|string|trim }}", ""),
+            ("{{ missing }}|{{ missing|string }}", "|"),
+            ("{{ 'x' if false }}|{{ ('x' if false) is defined }}", "|False"),
+            ("{{ [true, none] }}|{{ {'a': none} }}", "[True, None]|{'a': None}"),
+        ]
+    )
+    func booleansAndNonePrintAsPython(template: String, expected: String) throws {
+        let context: Context = [
+            "value": .null,
+            "items": [["v": true], ["v": .null]],
+        ]
+        #expect(try Template(template).render(context) == expected)
     }
 
     @Test("Logical AND operator")
@@ -267,7 +300,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "truefalsefalsefalse")
+        #expect(rendered == "TrueFalseFalseFalse")
     }
 
     @Test("Logical OR operator")
@@ -317,7 +350,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "truetruetruefalse")
+        #expect(rendered == "TrueTrueTrueFalse")
     }
 
     @Test("Logical NOT operator")
@@ -352,7 +385,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "falsetrue")
+        #expect(rendered == "FalseTrue")
     }
 
     @Test("Logical NOT NOT operator")
@@ -372,7 +405,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "truefalse")
+        #expect(rendered == "TrueFalse")
     }
 
     @Test("Logical AND OR combination")
@@ -406,7 +439,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "truetruetruetruefalse")
+        #expect(rendered == "TrueTrueTrueTrueFalse")
     }
 
     @Test("Logical AND NOT combination")
@@ -429,7 +462,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "falsetruefalsefalse")
+        #expect(rendered == "FalseTrueFalseFalse")
     }
 
     @Test("Logical OR NOT combination")
@@ -452,7 +485,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "truetruefalsetrue")
+        #expect(rendered == "TrueTrueFalseTrue")
     }
 
     @Test("Logical combined with comparison")
@@ -484,7 +517,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "falsetrue")
+        #expect(rendered == "FalseTrue")
     }
 
     @Test("If statement only")
@@ -752,6 +785,15 @@ struct TemplateTests {
         #expect(rendered == "34")
     }
 
+    @Test("For loop accepts arbitrary expressions")
+    func forLoopIterableAcceptsBinaryPlus() throws {
+        let string =
+            #"{%- set base = ["a", "b"] -%}{%- for x in base + ["c"] -%}{{- x -}}{%- endfor -%}"#
+        let context: Context = [:]
+        let rendered = try Template(string).render(context)
+        #expect(rendered == "abc")
+    }
+
     @Test("For loop with selectattr")
     func forLoopWithSelectAttr() throws {
         let string =
@@ -878,7 +920,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "1truefalsefalsetruetruetrue5")
+        #expect(rendered == "1TrueFalseFalseTrueTrueTrue5")
     }
 
     @Test("Binary expressions with concatenation")
@@ -888,7 +930,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "1+2=3 is true")
+        #expect(rendered == "1+2=3 is True")
     }
 
     @Test("String literals")
@@ -1001,13 +1043,7 @@ struct TemplateTests {
         let nodes = try Parser.parse(tokens)
         #expect(
             nodes == [
-                .expression(
-                    .binary(
-                        .add,
-                        .string("a"),
-                        .binary(.concat, .string("b"), .string("c"))
-                    )
-                )
+                .expression(.binary(.add, .string("a"), .string("bc")))
             ]
         )
 
@@ -1063,6 +1099,170 @@ struct TemplateTests {
         // Check result of template
         let rendered = try Template(string).render(context)
         #expect(rendered == "ok")
+    }
+
+    @Test("Integer attributes")
+    func integerAttributes() throws {
+        // As in Jinja2, `foo.0` is `foo[0]`.
+        let string = #"{{ foo.0.1.type }}"#
+        let context: Context = [
+            "foo": [["a", ["type": "text"]]]
+        ]
+
+        // Check result of lexer
+        let tokens = try Lexer.tokenize(string)
+        #expect(
+            tokens == [
+                Token(kind: .openExpression, value: "{{", position: 0),
+                Token(kind: .identifier, value: "foo", position: 3),
+                Token(kind: .dot, value: ".", position: 6),
+                Token(kind: .number, value: "0", position: 7),
+                Token(kind: .dot, value: ".", position: 8),
+                Token(kind: .number, value: "1", position: 9),
+                Token(kind: .dot, value: ".", position: 10),
+                Token(kind: .identifier, value: "type", position: 11),
+                Token(kind: .closeExpression, value: "}}", position: 16),
+                Token(kind: .eof, value: "", position: 18),
+            ]
+        )
+
+        // Check result of parser
+        let nodes = try Parser.parse(tokens)
+        #expect(
+            nodes == [
+                .expression(
+                    .member(
+                        .member(
+                            .member(.identifier("foo"), .integer(0), computed: true),
+                            .integer(1),
+                            computed: true
+                        ),
+                        .identifier("type"),
+                        computed: false
+                    )
+                )
+            ]
+        )
+
+        // Check result of template
+        let rendered = try Template(string).render(context)
+        #expect(rendered == "text")
+        #expect(try rendered == Template(nodes: nodes).render(context))
+    }
+
+    @Test("Numbers after a dot have no fraction")
+    func numbersAfterDotHaveNoFraction() throws {
+        // As in Jinja2, `x.1.5` is `x[1][5]`, and `1.5` elsewhere is a decimal.
+        let string = #"{{ x.1.5 + 1.5 }}"#
+        let context: Context = [
+            "x": [0, [0, 1, 2, 3, 4, 5]]
+        ]
+
+        // Check result of lexer
+        let tokens = try Lexer.tokenize(string)
+        #expect(
+            tokens == [
+                Token(kind: .openExpression, value: "{{", position: 0),
+                Token(kind: .identifier, value: "x", position: 3),
+                Token(kind: .dot, value: ".", position: 4),
+                Token(kind: .number, value: "1", position: 5),
+                Token(kind: .dot, value: ".", position: 6),
+                Token(kind: .number, value: "5", position: 7),
+                Token(kind: .plus, value: "+", position: 9),
+                Token(kind: .number, value: "1.5", position: 11),
+                Token(kind: .closeExpression, value: "}}", position: 15),
+                Token(kind: .eof, value: "", position: 17),
+            ]
+        )
+
+        // Check result of template
+        let rendered = try Template(string).render(context)
+        #expect(rendered == "6.5")
+    }
+
+    // Expected strings were rendered with jinja2 3.1.6.
+    @Test(
+        "Integer attributes match Jinja2",
+        arguments: [
+            ("{{ foo.0 }}", "a"),
+            ("{{ foo.1 }}", "b"),
+            ("{{ letters.10 }}", "k"),
+            ("{{ nested.0.1 }}", "b"),
+            ("{{ nested.1.1.name }}", "n"),
+            ("{{ messages.0.content.0.type }}", "image"),
+            (#"{{ "abc".0 }}{{ "abc".2 }}"#, "ac"),
+            ("{{ mixed.0 }}|{{ mixed['0'] }}", "int|str"),
+            (#"{% set d = {"0": "str"} %}{{ "undefined" if d.0 is undefined else d.0 }}"#, "undefined"),
+            ("[{{ foo.5 }}]", "[]"),
+            (#"{{ "undefined" if foo.5 is undefined else foo.5 }}"#, "undefined"),
+            ("{{ foo.00 }}", "a"),
+            ("{{ foo . 1 }}", "b"),
+            ("{{ x + 1.5 }}", "2.5"),
+            ("{{ 1.5 + numbers.0.0 }}", "2.5"),
+            ("{% for n in numbers.0 %}{{ n }},{% endfor %}", "1,2,3,"),
+            ("{% set first = foo.0 %}{{ first }}", "a"),
+            ("{{ numbers.0|length }}", "3"),
+            ("{{ foo.0|upper }}", "A"),
+            (#"{{ "defined" if foo.0 is defined else "undefined" }}"#, "defined"),
+            (#"{{ "defined" if foo.0is defined else "undefined" }}"#, "defined"),
+            ("{{ foo.0 ~ foo.1 }}", "ab"),
+            (#"{{ "equal" if foo.0 == "a" else "not equal" }}"#, "equal"),
+            ("{{ nested.0[1] }}", "b"),
+            ("{{ nested[0].1 }}", "b"),
+            ("{{ handlers.0() }}", "called"),
+            ("{{ (foo).1 }}", "b"),
+            ("{% if foo.0 %}yes{% endif %}", "yes"),
+        ]
+    )
+    func integerAttributesMatchJinja2(template: String, expected: String) throws {
+        let context: Context = [
+            "foo": ["a", "b"],
+            "letters": ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"],
+            "nested": [["a", "b"], ["c", ["name": "n"]]],
+            "messages": [["content": [["type": "image"]]]],
+            "numbers": [[1, 2, 3]],
+            "mixed": .object([.int(0): "int", .string("0"): "str"]),
+            "x": 1,
+            "handlers": [.function { _, _, _ in "called" }],
+        ]
+        #expect(try Template(template).render(context) == expected)
+    }
+
+    // Jinja2 raises a TemplateSyntaxError for each of these.
+    @Test(
+        "Invalid integer attributes",
+        arguments: [
+            "{{ foo.0abc }}",
+            "{{ foo.0 abc }}",
+            "{{ foo.0 'x' }}",
+            "{{ foo.-1 }}",
+            "{{ foo.01 }}",
+            "{{ foo.1e2 }}",
+            "{{ foo. 1.5 }}",
+            "{{ foo.0. }}",
+        ]
+    )
+    func invalidIntegerAttributes(template: String) {
+        #expect(throws: JinjaError.self) {
+            try Template(template)
+        }
+    }
+
+    // Jinja2 reads these as `foo[1]`, `foo[10]`, and `foo[99999999999999999999]`,
+    // but this package has no hexadecimal, underscore-separated, or arbitrary-precision integers,
+    // so these throw instead of reading a different item.
+    @Test(
+        "Unsupported integer attributes",
+        arguments: [
+            "{{ foo.0x1 }}",
+            "{{ foo.1_0 }}",
+            "{{ foo.99999999999999999999 }}",
+        ]
+    )
+    func unsupportedIntegerAttributes(template: String) {
+        #expect(throws: JinjaError.self) {
+            try Template(template)
+        }
     }
 
     @Test("Object methods")
@@ -1127,6 +1327,13 @@ struct TemplateTests {
         #expect(rendered == "   test it")
     }
 
+    @Test("String rstrip with chars")
+    func rstripWithChars() throws {
+        let string = #"{{ "hello...".rstrip(".") }}"#
+        let rendered = try Template(string).render([:])
+        #expect(rendered == "hello")
+    }
+
     @Test("String lstrip")
     func lstrip() throws {
         let string = #"{{ "   test it  ".lstrip() }}"#
@@ -1135,6 +1342,21 @@ struct TemplateTests {
         // Check result of template
         let rendered = try Template(string).render(context)
         #expect(rendered == "test it  ")
+    }
+
+    @Test("String lstrip with chars")
+    func lstripWithChars() throws {
+        let string = #"{{ "///path".lstrip("/") }}"#
+        let rendered = try Template(string).render([:])
+        #expect(rendered == "path")
+    }
+
+    @Test("String strip with chars")
+    func stripWithChars() throws {
+        // Matches jinja2: chars is a set, so '</answer>' peels the whole suffix.
+        let string = #"{{ "xy</answer>".strip('</answer>') }}"#
+        let rendered = try Template(string).render([:])
+        #expect(rendered == "xy")
     }
 
     @Test("String split")
@@ -1174,7 +1396,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "true")
+        #expect(rendered == "True")
     }
 
     @Test("String startswith false")
@@ -1184,7 +1406,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "false")
+        #expect(rendered == "False")
     }
 
     @Test("String endswith")
@@ -1194,7 +1416,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "true")
+        #expect(rendered == "True")
     }
 
     @Test("String endswith false")
@@ -1204,7 +1426,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "false")
+        #expect(rendered == "False")
     }
 
     @Test("String replace")
@@ -1254,7 +1476,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|true|false|true|false|true|false|")
+        #expect(rendered == "|True|False|True|False|True|False|")
     }
 
     @Test("Membership negation with not")
@@ -1267,7 +1489,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|false|true|false|true|false|true|")
+        #expect(rendered == "|False|True|False|True|False|True|")
     }
 
     @Test("Membership negation with not in")
@@ -1301,7 +1523,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|false|true|false|true|false|true|")
+        #expect(rendered == "|False|True|False|True|False|True|")
     }
 
     @Test("Membership with undefined")
@@ -1312,7 +1534,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|false|false|false|false|false|false|")
+        #expect(rendered == "|False|False|False|False|False|False|")
     }
 
     @Test("Escaped characters")
@@ -1341,7 +1563,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|true|true|false|true|false|true|false|")
+        #expect(rendered == "|True|True|False|True|False|True|False|")
     }
 
     @Test("Filter operator")
@@ -1429,12 +1651,12 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered.contains("\"key\":\"value\""))
+        #expect(rendered.contains("\"key\": \"value\""))
         #expect(rendered.contains("\"test\""))
         #expect(rendered.contains("1"))
         #expect(rendered.contains("true"))
         #expect(rendered.contains("null"))
-        #expect(rendered.contains("[1,2,3]"))
+        #expect(rendered.contains("[1, 2, 3]"))
     }
 
     @Test("Filter statements")
@@ -1455,7 +1677,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|2|0|0|0|1|1|1|0|false|true|")
+        #expect(rendered == "|2|0|0|0|1|1|1|0|False|True|")
     }
 
     @Test("Boolean operations with strings")
@@ -1466,7 +1688,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|b||||a|a|a||false|true|")
+        #expect(rendered == "|b||||a|a|a||False|True|")
     }
 
     @Test("Boolean operations mixed")
@@ -1477,7 +1699,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|1|0|false|false|true|true|1|0|")
+        #expect(rendered == "|1|0|False|False|True|True|1|0|")
     }
 
     @Test("Boolean operations mixed with strings")
@@ -1488,7 +1710,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "||a||a||true|false|a|")
+        #expect(rendered == "||a||a||True|False|a|")
     }
 
     @Test("Boolean operations in if statements")
@@ -1588,6 +1810,45 @@ struct TemplateTests {
         #expect(rendered == "value")
     }
 
+    @Test("Object literals with integer keys")
+    func objectLiteralsWithIntegerKeys() throws {
+        let string = #"{% set d = {0: "a", 512: "b"} %}{{ d[512] }}"#
+        let rendered = try Template(string).render([:])
+        #expect(rendered == "b")
+    }
+
+    @Test("Object literals with integer keys sort numerically")
+    func objectLiteralsIntegerKeysDictsort() throws {
+        let string = #"""
+            {%- set budget_reflections = {
+                 0:      0,
+                 512:    128,
+                 1024:   256,
+                 2048:   512,
+                 4096:   512,
+                 8192:   1024,
+                 16384:  1024
+            } -%}
+            {%- set thinking_budget = 1000 -%}
+            {%- set ns = namespace(chosen=none) -%}
+            {%- for budget, reflection in budget_reflections|dictsort -%}
+              {%- if thinking_budget >= budget -%}
+                {%- set ns.chosen = reflection -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.chosen }}
+            """#
+        let rendered = try Template(string).render([:])
+        #expect(rendered == "128")
+    }
+
+    @Test("Integer object keys remain distinct from string keys")
+    func integerObjectKeysDistinctFromStrings() throws {
+        let string = #"{% set d = {512: "int"} %}{{ d[512] }}|{{ d['512'] is undefined }}"#
+        let rendered = try Template(string).render([:])
+        #expect(rendered == "int|True")
+    }
+
     @Test("Object literals nested")
     func objectLiteralsNested() throws {
         // Test simple object with minimal spacing
@@ -1607,6 +1868,59 @@ struct TemplateTests {
         // Check result of template
         let rendered = try Template(string).render(context)
         #expect(rendered == "value")
+    }
+
+    // Python prints each element of a list or dict with `repr()`.
+    // Expected values are Jinja2 3.1.6 output.
+    @Test(
+        "Containers print elements with Python repr",
+        arguments: [
+            ("{{ ['a', 'b'] }}", "['a', 'b']"),
+            ("{{ {'a': 'b'} }}", "{'a': 'b'}"),
+            ("{{ [true, false, none] }}", "[True, False, None]"),
+            ("{{ {'a': true, 'b': none} }}", "{'a': True, 'b': None}"),
+            ("{{ [missing] }}", "[Undefined]"),
+            ("{{ {'k': missing} }}", "{'k': Undefined}"),
+            ("{{ single_quote }}", #"["it's"]"#),
+            ("{{ double_quote }}", #"['say "hi"']"#),
+            ("{{ both_quotes }}", #"['it\'s "both"']"#),
+            ("{{ backslash }}", #"['back\\slash']"#),
+            ("{{ control }}", #"['tab\there', 'cr\rlf\n', 'nul\x00', 'bell\x07', 'del\x7f']"#),
+            (
+                "{{ unicode }}",
+                #"['café', '\xa0nbsp', '\x85nel', 'zw\u200bsp', 'ls\u2028', 'emoji 😀', 'rtl\u202e', 'bom\ufeff', 'priv\ue000', 'e\#u{301}', '\U000e0001tag', '\U0010ffff']"#
+            ),
+            ("{{ keys }}", #"{"it's": 'v', 'k\n': 1}"#),
+            ("{{ floats }}", "[1.0, 0.1, 1e+16, 9300000000000000.0, 1e-05, -0.0, 3, nan, inf, -inf]"),
+            ("{{ nested }}", "[[['deep']], {'a': {'b': 'c'}}]"),
+            ("{{ mixed_keys }}", "{1: 'a', '1': 'b'}"),
+            ("{{ message.content }}", "[{'type': 'text', 'text': 'Describe this.'}]"),
+            ("{{ items|string }}", "['a', True, None]"),
+            ("{{ 'v' ~ items }}", "v['a', True, None]"),
+            ("{{ containers|join(', ') }}", "['a'], {'k': 'v'}, s"),
+            ("{% macro m() %}{% endmacro %}{{ [m] }}", "[<Macro 'm'>]"),
+        ]
+    )
+    func containersPrintElementsWithPythonRepr(template: String, expected: String) throws {
+        let context: Context = [
+            "single_quote": ["it's"],
+            "double_quote": ["say \"hi\""],
+            "both_quotes": ["it's \"both\""],
+            "backslash": ["back\\slash"],
+            "control": ["tab\there", "cr\rlf\n", "nul\u{0}", "bell\u{7}", "del\u{7f}"],
+            "unicode": [
+                "café", "\u{a0}nbsp", "\u{85}nel", "zw\u{200b}sp", "ls\u{2028}", "emoji 😀",
+                "rtl\u{202e}", "bom\u{feff}", "priv\u{e000}", "e\u{301}", "\u{e0001}tag", "\u{10ffff}",
+            ],
+            "keys": ["it's": "v", "k\n": 1],
+            "floats": [1.0, 0.1, 1e16, 9.3e15, 1e-5, -0.0, 3, .double(.nan), .double(.infinity), .double(-.infinity)],
+            "nested": [[["deep"]], ["a": ["b": "c"]]],
+            "mixed_keys": .object([.int(1): "a", .string("1"): "b"]),
+            "message": ["content": [["type": "text", "text": "Describe this."]]],
+            "items": ["a", true, nil],
+            "containers": [["a"], ["k": "v"], "s"],
+        ]
+        #expect(try Template(template).render(context) == expected)
     }
 
     @Test("Array operators")
@@ -1631,7 +1945,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|true|false|false|true|")
+        #expect(rendered == "|True|False|False|True|")
     }
 
     @Test("Object get method")
@@ -1646,7 +1960,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|true|true|true|")
+        #expect(rendered == "|True|True|True|")
     }
 
     @Test("Object items method")
@@ -1675,7 +1989,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "found=false")
+        #expect(rendered == "found=False")
     }
 
     @Test("Undefined variables")
@@ -1865,8 +2179,8 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered.contains(#""string" : "world""#))
-        #expect(rendered.contains(#""number" : 5"#))
+        #expect(rendered.contains(#""string": "world""#))
+        #expect(rendered.contains(#""number": 5"#))
     }
 
     @Test("Filter operator with map")
@@ -1991,7 +2305,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|hello|false|hello|0|")
+        #expect(rendered == "|hello|False|hello|hello|")
     }
 
     @Test("Filter operator with unique")
@@ -2014,7 +2328,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|false|true|true|false|")
+        #expect(rendered == "|False|True|True|False|")
     }
 
     @Test("Is operator with boolean")
@@ -2025,7 +2339,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|true|false|false|true|true|false|")
+        #expect(rendered == "|True|False|False|True|True|False|")
     }
 
     @Test("Is operator with odd even")
@@ -2036,7 +2350,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|true|false|false|true|true|false|true|false|")
+        #expect(rendered == "|True|False|False|True|True|False|True|False|")
     }
 
     @Test("Is operator with callable")
@@ -2049,7 +2363,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|true|false|false|true|")
+        #expect(rendered == "|True|False|False|True|")
     }
 
     @Test("Is operator with case")
@@ -2060,7 +2374,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|true|false|false|true|")
+        #expect(rendered == "|True|False|False|True|")
     }
 
     @Test("Is operator with divisibleby")
@@ -2071,7 +2385,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|true|false|true|true|")
+        #expect(rendered == "|True|False|True|True|")
     }
 
     @Test("Is operator with divisibleby without parentheses")
@@ -2082,7 +2396,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|true|false|true|")
+        #expect(rendered == "|True|False|True|")
     }
 
     @Test("Is operator with fractional numbers even")
@@ -2091,7 +2405,7 @@ struct TemplateTests {
         let context: Context = [:]
 
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|false|false|false|true|")
+        #expect(rendered == "|False|False|False|True|")
     }
 
     @Test("Is operator with fractional numbers odd")
@@ -2100,7 +2414,7 @@ struct TemplateTests {
         let context: Context = [:]
 
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|false|false|false|true|")
+        #expect(rendered == "|False|False|False|True|")
     }
 
     @Test("Is operator with mapping")
@@ -2116,7 +2430,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|false|false|false|true|")
+        #expect(rendered == "|False|False|False|True|")
     }
 
     @Test("Short circuit with false and")
@@ -2126,7 +2440,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "false")
+        #expect(rendered == "False")
     }
 
     @Test("Short circuit with true or")
@@ -2136,7 +2450,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "true")
+        #expect(rendered == "True")
     }
 
     @Test("Filter with arguments")
@@ -2170,7 +2484,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|true|false|false|true|")
+        #expect(rendered == "|True|False|False|True|")
     }
 
     @Test("Keyword arguments")
@@ -2325,7 +2639,7 @@ struct TemplateTests {
 
         let template = try Template("{{ items|reject|join(',') }}")
         let result = try template.render(context)
-        #expect(result == ",", "Should reject truthy values, leaving empty string and null")
+        #expect(result == ",None", "Should reject truthy values, leaving empty string and null")
     }
 
     @Test("escape filter HTML entity encoding")
@@ -2357,7 +2671,7 @@ struct TemplateTests {
         ]
 
         let rendered = try Template(template).render(context)
-        #expect(rendered.trimmingCharacters(in: .whitespacesAndNewlines) == "true")
+        #expect(rendered.trimmingCharacters(in: .whitespacesAndNewlines) == "True")
     }
 
     @Test("Simple namespace test")
@@ -2371,7 +2685,7 @@ struct TemplateTests {
             """
 
         let rendered = try Template(template).render([:])
-        #expect(rendered.trimmingCharacters(in: .whitespacesAndNewlines) == "true")
+        #expect(rendered.trimmingCharacters(in: .whitespacesAndNewlines) == "True")
     }
 
     @Test("Namespace vs regular variable scoping difference")
@@ -2386,7 +2700,7 @@ struct TemplateTests {
             """
 
         let regularResult = try Template(regularVarTemplate).render([:])
-        #expect(regularResult.trimmingCharacters(in: .whitespacesAndNewlines) == "false")
+        #expect(regularResult.trimmingCharacters(in: .whitespacesAndNewlines) == "False")
 
         let namespaceTemplate = """
             {% set ns = namespace(found=false) %}
@@ -2397,7 +2711,7 @@ struct TemplateTests {
             """
 
         let namespaceResult = try Template(namespaceTemplate).render([:])
-        #expect(namespaceResult.trimmingCharacters(in: .whitespacesAndNewlines) == "true")
+        #expect(namespaceResult.trimmingCharacters(in: .whitespacesAndNewlines) == "True")
     }
 
     @Test("Generation statements (HuggingFace extension)")

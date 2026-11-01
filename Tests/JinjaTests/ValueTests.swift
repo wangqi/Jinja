@@ -46,6 +46,28 @@ struct ValueTests {
         }
     }
 
+    @Test("Initialization from non-Int integer widths")
+    func initFromIntegerWidths() throws {
+        // JSON schema integers can arrive boxed as Int64/Int32/UInt; all must bridge.
+        #expect(try Value(any: Int64(0)) == Value.int(0))
+        #expect(try Value(any: Int64(-7)) == Value.int(-7))
+        #expect(try Value(any: Int32(42)) == Value.int(42))
+        #expect(try Value(any: UInt(5)) == Value.int(5))
+        #expect(try Value(any: UInt8(255)) == Value.int(255))
+        // Out-of-Int-range falls back to a double rather than trapping.
+        #expect(try Value(any: UInt64.max) == Value.double(Double(UInt64.max)))
+    }
+
+    @Test("Nested Optionals degrade to null instead of throwing")
+    func initFromNestedOptional() throws {
+        // A missing template member arrives as Optional<Any>.some(nil); it must
+        // become Jinja null, not a runtime throw.
+        let nestedNone: Any? = .some(Optional<Any>.none as Any)
+        #expect(try Value(any: nestedNone) == Value.null)
+        let doublyNested: Any? = .some(Optional<Any>.some(Optional<Any>.none as Any) as Any)
+        #expect(try Value(any: doublyNested) == Value.null)
+    }
+
     @Test("Literal conformances")
     func literals() {
         let stringValue: Value = "test"
@@ -82,6 +104,69 @@ struct ValueTests {
         #expect(nilValue == Value.null)
     }
 
+    @Test("object(_:) from String-keyed OrderedDictionary preserves order")
+    func objectFromStringKeyedOrderedDictionary() {
+        var source = OrderedDictionary<String, Value>()
+        source["z"] = .int(1)
+        source["a"] = .int(2)
+
+        let value = Value.object(source)
+        guard case let .object(dict) = value else {
+            Issue.record("Expected object value")
+            return
+        }
+        // Keys are wrapped as .string and insertion order is preserved.
+        #expect(Array(dict.keys) == [.string("z"), .string("a")])
+        #expect(dict[.string("z")] == .int(1))
+        #expect(dict[.string("a")] == .int(2))
+    }
+
+    @Test("object(_:) from String-keyed Dictionary sorts keys")
+    func objectFromStringKeyedDictionary() {
+        let source: [String: Value] = ["z": .int(1), "a": .int(2), "m": .int(3)]
+
+        let value = Value.object(source)
+        guard case let .object(dict) = value else {
+            Issue.record("Expected object value")
+            return
+        }
+        #expect(Array(dict.keys) == [.string("a"), .string("m"), .string("z")])
+    }
+
+    @Test("object(_:) via init(uniqueKeysWithValues:) stays source-compatible")
+    func objectFromUniqueKeysWithValues() {
+        // Mirrors how downstream code built String-keyed objects before ObjectKey.
+        var result: [String: Value] = [:]
+        result["role"] = .string("user")
+        let value = Value.object(.init(uniqueKeysWithValues: result))
+        #expect(value == ["role": .string("user")])
+    }
+
+    @Test("Dictionary literal accepts dynamic String keys")
+    func dictionaryLiteralWithDynamicStringKey() {
+        // A non-literal String key would fail if the literal required ObjectKey keys.
+        let key = String("role")
+        let value: Value = [key: .string("user")]
+        guard case let .object(dict) = value else {
+            Issue.record("Expected object value")
+            return
+        }
+        #expect(dict[.string("role")] == .string("user"))
+    }
+
+    @Test("String subscript reads and writes object storage")
+    func objectStorageStringSubscript() {
+        var dict = OrderedDictionary<ObjectKey, Value>()
+        let dynamicKey = "count"
+        dict[dynamicKey] = .int(7)
+
+        #expect(dict[dynamicKey] == .int(7))
+        #expect(dict[.string("count")] == .int(7))
+        // The string subscript never matches integer keys.
+        dict[.int(512)] = .string("int")
+        #expect(dict["512"] == nil)
+    }
+
     @Test("Dictionary conversion via any is key-sorted")
     func initFromAnyDictionarySortsKeys() throws {
         let source: [String: Any?] = [
@@ -103,12 +188,17 @@ struct ValueTests {
         #expect(Value.string("test").description == "test")
         #expect(Value.int(42).description == "42")
         #expect(Value.double(3.14).description == "3.14")
-        #expect(Value.boolean(true).description == "true")
-        #expect(Value.boolean(false).description == "false")
-        #expect(Value.null.description == "")
+        #expect(Value.boolean(true).description == "True")
+        #expect(Value.boolean(false).description == "False")
+        #expect(Value.null.description == "None")
         #expect(Value.undefined.description == "")
         #expect(Value.array([Value.int(1), Value.int(2)]).description == "[1, 2]")
-        #expect(Value.object(["a": Value.int(1)]).description == "{a: 1}")
+        #expect(Value.object(["a": Value.int(1)]).description == "{'a': 1}")
+
+        var collidingKeys = OrderedDictionary<ObjectKey, Value>()
+        collidingKeys[.int(512)] = .string("int")
+        collidingKeys[.string("512")] = .string("str")
+        #expect(Value.object(collidingKeys).description == "{512: 'int', '512': 'str'}")
     }
 
     @Test("isTruthy behavior")
@@ -165,7 +255,7 @@ struct ValueTests {
         #expect(arrayJSON == "[1,\"test\",false]")
 
         // Test object encoding
-        var objectDict = OrderedDictionary<String, Value>()
+        var objectDict = OrderedDictionary<ObjectKey, Value>()
         objectDict["name"] = Value.string("John")
         objectDict["age"] = Value.int(30)
         objectDict["active"] = Value.boolean(true)
@@ -193,6 +283,14 @@ struct ValueTests {
         let functionValue = Value.function { _, _, _ in Value.null }
         #expect(throws: EncodingError.self) {
             _ = try encoder.encode(functionValue)
+        }
+
+        // Integer and string keys that share a stringValue must not silently collide
+        var collidingKeys = OrderedDictionary<ObjectKey, Value>()
+        collidingKeys[.int(512)] = Value.string("int")
+        collidingKeys[.string("512")] = Value.string("str")
+        #expect(throws: EncodingError.self) {
+            _ = try encoder.encode(Value.object(collidingKeys))
         }
     }
 
@@ -298,7 +396,7 @@ struct ValueTests {
         let decoder = JSONDecoder()
 
         // Create a complex nested structure
-        var complexDict = OrderedDictionary<String, Value>()
+        var complexDict = OrderedDictionary<ObjectKey, Value>()
         complexDict["users"] = Value.array([
             Value.object([
                 "id": Value.int(1),
@@ -392,7 +490,7 @@ struct ValueTests {
         #expect(decodedMixedArray == mixedArray)
 
         // Test objects with various key types (all should be strings in JSON)
-        var objectWithVariousKeys = OrderedDictionary<String, Value>()
+        var objectWithVariousKeys = OrderedDictionary<ObjectKey, Value>()
         objectWithVariousKeys["stringKey"] = Value.string("stringValue")
         objectWithVariousKeys["numberKey"] = Value.double(123.45)
         objectWithVariousKeys["booleanKey"] = Value.boolean(false)
@@ -795,7 +893,7 @@ struct ValueTests {
     @Test("Array with mixed types description")
     func arrayMixedDescription() {
         let value = Value.array([.string("a"), .int(1), .boolean(true)])
-        #expect(value.description == "['a', 1, true]")
+        #expect(value.description == "['a', 1, True]")
     }
 
     // MARK: - Hash for various types

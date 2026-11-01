@@ -19,6 +19,93 @@ struct FiltersTests {
         #expect(result == .string("hello world"))
     }
 
+    @Test("upper filter coerces non-strings (Jinja2 soft_str)")
+    func upperFilterCoercesNonStrings() throws {
+        #expect(try Filters.upper([.undefined], kwargs: [:], env: env) == .string(""))
+        #expect(try Filters.upper([.null], kwargs: [:], env: env) == .string("NONE"))
+        #expect(try Filters.upper([.int(5)], kwargs: [:], env: env) == .string("5"))
+    }
+
+    @Test("lower filter coerces non-strings (Jinja2 soft_str)")
+    func lowerFilterCoercesNonStrings() throws {
+        #expect(try Filters.lower([.undefined], kwargs: [:], env: env) == .string(""))
+        #expect(try Filters.lower([.int(42)], kwargs: [:], env: env) == .string("42"))
+    }
+
+    @Test("upper on an undefined value renders empty instead of raising")
+    func upperOnUndefinedRendersEmpty() throws {
+        // Mirrors chat templates that apply `| upper` to a possibly-absent value.
+        // For example, a JSON Schema property using `anyOf` with no scalar `type`
+        // yields `value['type'] | upper`.
+        #expect(try Template("{{ missing | upper }}").render([:]) == "")
+    }
+
+    @Test("capitalize filter coerces non-strings (Jinja2 soft_str)")
+    func capitalizeFilterCoercesNonStrings() throws {
+        #expect(try Filters.capitalize([.undefined], kwargs: [:], env: env) == .string(""))
+        #expect(try Filters.capitalize([.null], kwargs: [:], env: env) == .string("None"))
+        #expect(try Filters.capitalize([.int(42)], kwargs: [:], env: env) == .string("42"))
+        #expect(try Filters.capitalize([.string("hello")], kwargs: [:], env: env) == .string("Hello"))
+    }
+
+    @Test("title filter coerces non-strings (Jinja2 soft_str)")
+    func titleFilterCoercesNonStrings() throws {
+        #expect(try Filters.title([.undefined], kwargs: [:], env: env) == .string(""))
+        #expect(try Filters.title([.int(42)], kwargs: [:], env: env) == .string("42"))
+    }
+
+    @Test("trim filter coerces non-strings (Jinja2 soft_str)")
+    func trimFilterCoercesNonStrings() throws {
+        #expect(try Filters.trim([.undefined], kwargs: [:], env: env) == .string(""))
+        #expect(try Filters.trim([.int(42)], kwargs: [:], env: env) == .string("42"))
+    }
+
+    @Test("center filter coerces non-strings (Jinja2 soft_str)")
+    func centerFilterCoercesNonStrings() throws {
+        #expect(try Filters.center([.undefined, .int(4)], kwargs: [:], env: env) == .string("    "))
+        #expect(try Filters.center([.int(5), .int(1)], kwargs: [:], env: env) == .string("5"))
+        #expect(try Filters.center([.int(5), .int(5)], kwargs: [:], env: env) == .string("  5  "))
+    }
+
+    @Test("wordcount filter coerces non-strings (Jinja2 soft_str)")
+    func wordcountFilterCoercesNonStrings() throws {
+        #expect(try Filters.wordcount([.undefined], kwargs: [:], env: env) == .int(0))
+        #expect(try Filters.wordcount([.int(42)], kwargs: [:], env: env) == .int(1))
+    }
+
+    @Test("replace filter coerces non-strings (Jinja2 soft_str)")
+    func replaceFilterCoercesNonStrings() throws {
+        #expect(
+            try Filters.replace([.undefined, .string("a"), .string("b")], kwargs: [:], env: env)
+                == .string("")
+        )
+        #expect(
+            try Filters.replace([.int(42), .string("4"), .string("x")], kwargs: [:], env: env)
+                == .string("x2")
+        )
+        #expect(
+            try Filters.replace([.string("a1"), .int(1), .int(9)], kwargs: [:], env: env)
+                == .string("a9")
+        )
+    }
+
+    @Test("format filter coerces non-strings (Jinja2 soft_str)")
+    func formatFilterCoercesNonStrings() throws {
+        #expect(try Filters.format([.undefined], kwargs: [:], env: env) == .string(""))
+        #expect(try Filters.format([.int(42)], kwargs: [:], env: env) == .string("42"))
+        #expect(
+            try Filters.format([.string("n=%s"), .int(7)], kwargs: [:], env: env) == .string("n=7")
+        )
+    }
+
+    @Test("join filter coerces non-string separator (Jinja2 soft_str)")
+    func joinFilterCoercesNonStringSeparator() throws {
+        let values = [Value.string("a"), .string("b")]
+        #expect(
+            try Filters.join([.array(values), .int(0)], kwargs: [:], env: env) == .string("a0b")
+        )
+    }
+
     @Test("length filter for strings")
     func lengthFilterString() throws {
         let result = try Filters.length([.string("hello")], kwargs: [:], env: env)
@@ -267,6 +354,22 @@ struct FiltersTests {
         #expect(result == .array([.string("a"), .string("n/a")]))
     }
 
+    // Expected strings were rendered with jinja2 3.1.6,
+    // which leaves a missing attribute undefined unless the default is not none.
+    @Test(
+        "map and groupby leave a missing attribute undefined without a default",
+        arguments: [
+            ("{{ items|map(attribute='x')|join(',') }}", "1,"),
+            ("{{ items|map(attribute='x', default=none)|join(',') }}", "1,"),
+            ("{{ items|map(attribute='x', default='d')|join(',') }}", "1,d"),
+            ("{% for g in [{'y': 1}]|groupby('x') %}[{{ g.grouper }}]{% endfor %}", "[]"),
+        ]
+    )
+    func mapAndGroupbyMissingAttribute(template: String, expected: String) throws {
+        let context: Context = ["items": [["x": 1], [:]]]
+        #expect(try Template(template).render(context) == expected)
+    }
+
     @Test("map filter with integer attribute")
     func mapFilterWithIntegerAttribute() throws {
         let items: [Value] = [
@@ -341,6 +444,22 @@ struct FiltersTests {
             .array([.string("a"), .int(1)]),
             .array([.string("b"), .int(2)]),
             .array([.string("c"), .int(3)]),
+        ])
+        #expect(result == expected)
+    }
+
+    @Test("dictsort filter with integer keys")
+    func dictsortFilterWithIntegerKeys() throws {
+        let dict = Value.object([
+            1024: .int(256),
+            0: .int(0),
+            512: .int(128),
+        ])
+        let result = try Filters.dictsort([dict], kwargs: [:], env: env)
+        let expected = Value.array([
+            .array([.int(0), .int(0)]),
+            .array([.int(512), .int(128)]),
+            .array([.int(1024), .int(256)]),
         ])
         #expect(result == expected)
     }
@@ -485,11 +604,273 @@ struct FiltersTests {
     @Test("tojson filter with array")
     func tojsonFilterWithArray() throws {
         let result = try Filters.tojson([.array([.int(1), .int(2), .int(3)])], kwargs: [:], env: env)
-        #expect(result == .string("[1,2,3]"))
+        #expect(result == .string("[1, 2, 3]"))
     }
 
-    @Test("tojson filter sorts object keys deterministically")
-    func tojsonFilterSortsObjectKeysDeterministically() throws {
+    // MARK: tojson policies
+
+    @Test("tojson filter matches transformers by default")
+    func tojsonFilterMatchesTransformersByDefault() throws {
+        // transformers replaces Jinja2's tojson with
+        // json.dumps(ensure_ascii=False, sort_keys=False):
+        // insertion order, a space after "," and ":", and non-ASCII kept as is.
+        let value: Value = ["path": "</style> a/b — c 🏳️", "z": 1]
+        let result = try Filters.tojson([value], kwargs: [:], env: env)
+        #expect(result == .string(#"{"path": "</style> a/b — c 🏳️", "z": 1}"#))
+    }
+
+    @Test("tojson filter honors json.dumps_kwargs policy")
+    func tojsonFilterHonorsDumpsKwargsPolicy() throws {
+        let env = Environment()
+        env.policies.jsonDumpsOptions = .init(sortKeys: true)
+        let value: Value = ["z": "—", "a": 1]
+        let result = try Filters.tojson([value], kwargs: [:], env: env)
+        // Jinja2's default policy: sorted keys, and json.dumps' own
+        // ensure_ascii=True default applies.
+        #expect(result == .string("{\"a\": 1, \"z\": \"\\u2014\"}"))
+    }
+
+    @Test("tojson filter arguments override json.dumps_kwargs policy")
+    func tojsonFilterArgumentsOverridePolicy() throws {
+        let env = Environment()
+        env.policies.jsonDumpsOptions = .init(ensureASCII: true, sortKeys: true, indent: 4)
+        let value: Value = ["b": "—", "a": 1]
+        let result = try Filters.tojson(
+            [value],
+            kwargs: ["indent": 2, "ensure_ascii": false],
+            env: env
+        )
+        #expect(result == .string("{\n  \"a\": 1,\n  \"b\": \"—\"\n}"))
+    }
+
+    @Test("tojson filter honors json.dumps_function policy")
+    func tojsonFilterHonorsDumpsFunctionPolicy() throws {
+        let env = Environment()
+        env.policies.jsonDumpsOptions.sortKeys = true
+        env.policies.jsonSerializer = .custom { value, options in
+            #expect(value == .int(1))
+            #expect(options.sortKeys)
+            #expect(!options.ensureASCII)
+            #expect(options.indent == 2)
+            return "custom JSON"
+        }
+        let template = try Template("{{ value | tojson(indent=2) }}")
+        let result = try template.render(["value": 1], environment: env)
+        #expect(result == "custom JSON")
+        #expect(env.policies.jsonDumpsOptions.indent == nil)
+    }
+
+    @Test("tojson filter can be made HTML-safe like Jinja2")
+    func tojsonFilterHTMLSafePolicy() throws {
+        let env = Environment()
+        env.policies.jsonSerializer = .htmlSafe
+        let result = try Filters.tojson([.string("<script>")], kwargs: [:], env: env)
+        #expect(result == .string("\"\\u003cscript\\u003e\""))
+    }
+
+    @Test("tojson filter reads policies from parent environments")
+    func tojsonFilterReadsPoliciesFromParent() throws {
+        let parent = Environment()
+        parent.policies.jsonDumpsOptions.sortKeys = true
+        let child = Environment(parent: parent)
+        let value: Value = ["b": 1, "a": 2]
+        let result = try Filters.tojson([value], kwargs: [:], env: child)
+        #expect(result == .string(#"{"a": 2, "b": 1}"#))
+    }
+
+    @Test("tojson filter rejects invalid template indentation")
+    func tojsonFilterRejectsInvalidIndent() throws {
+        #expect(throws: JinjaError.self) {
+            try Filters.tojson([.int(1)], kwargs: ["indent": "invalid"], env: env)
+        }
+    }
+
+    @Test("tojson filter normalizes negative template indentation")
+    func tojsonFilterNegativeIndent() throws {
+        #expect(
+            try Filters.tojson([[1]], kwargs: ["indent": -1], env: env)
+                == .string("[\n1\n]")
+        )
+    }
+
+    // Expected values are Jinja2 3.1.6 output with transformers' tojson,
+    // json.dumps(x, ensure_ascii=False, indent=None, separators=None, sort_keys=False).
+
+    @Test("tojson filter accepts separators as a tuple or list")
+    func tojsonFilterSeparators() throws {
+        let context: Context = ["x": ["b": 1, "a": [1, ["d": nil, "c": "é"]]]]
+        let compact = #"{"b":1,"a":[1,{"d":null,"c":"é"}]}"#
+        for source in [
+            "{{ x | tojson(separators=(',', ':')) }}",
+            "{{ x | tojson(separators=[',', ':']) }}",
+        ] {
+            #expect(try Template(source).render(context) == compact)
+        }
+        #expect(
+            try Template("{{ x | tojson(separators=(';', '=')) }}").render(context)
+                == #"{"b"=1;"a"=[1;{"d"=null;"c"="é"}]}"#
+        )
+        #expect(
+            try Template("{{ x | tojson(separators=none) }}").render(context)
+                == #"{"b": 1, "a": [1, {"d": null, "c": "é"}]}"#
+        )
+    }
+
+    @Test("tojson filter separators apply with indentation")
+    func tojsonFilterSeparatorsWithIndent() throws {
+        let context: Context = ["x": ["b": 1, "a": [1]]]
+        #expect(
+            try Template("{{ x | tojson(indent=2, separators=(',', ':')) }}").render(context)
+                == "{\n  \"b\":1,\n  \"a\":[\n    1\n  ]\n}"
+        )
+        #expect(
+            try Template("{{ x | tojson(indent=2, separators=(', ', ': ')) }}").render(context)
+                == "{\n  \"b\": 1, \n  \"a\": [\n    1\n  ]\n}"
+        )
+    }
+
+    @Test("tojson filter rejects separators that are not a pair of strings")
+    func tojsonFilterRejectsInvalidSeparators() throws {
+        for source in [
+            "{{ 1 | tojson(separators=(',',)) }}",
+            "{{ 1 | tojson(separators=(',', ':', ';')) }}",
+            "{{ 1 | tojson(separators=(1, 2)) }}",
+            "{{ 1 | tojson(separators=1) }}",
+            "{{ 1 | tojson(separators=missing) }}",
+        ] {
+            #expect(throws: JinjaError.self, "\(source)") {
+                try Template(source).render([:])
+            }
+        }
+    }
+
+    @Test("tojson filter accepts sort_keys")
+    func tojsonFilterSortKeys() throws {
+        let context: Context = ["x": ["b": 1, "a": [1, ["d": nil, "c": "é"]]]]
+        let sorted = #"{"a": [1, {"c": "é", "d": null}], "b": 1}"#
+        let unsorted = #"{"b": 1, "a": [1, {"d": null, "c": "é"}]}"#
+        #expect(try Template("{{ x | tojson(sort_keys=true) }}").render(context) == sorted)
+        #expect(try Template("{{ x | tojson(sort_keys=1) }}").render(context) == sorted)
+        #expect(try Template("{{ x | tojson(sort_keys=false) }}").render(context) == unsorted)
+        #expect(try Template("{{ x | tojson(sort_keys=none) }}").render(context) == unsorted)
+        #expect(
+            try Template(
+                "{{ x | tojson(sort_keys=true, separators=(',', ':'), ensure_ascii=true) }}"
+            ).render(context) == #"{"a":[1,{"c":"\u00e9","d":null}],"b":1}"#
+        )
+    }
+
+    @Test("tojson filter separators and sort_keys override json.dumps_kwargs policy")
+    func tojsonFilterSeparatorsAndSortKeysOverridePolicy() throws {
+        let env = Environment()
+        env.policies.jsonDumpsOptions = .init(sortKeys: true, separators: (item: ",", key: ":"))
+        let value: Value = ["b": 1, "a": 2]
+        #expect(try Filters.tojson([value], kwargs: [:], env: env) == .string(#"{"a":2,"b":1}"#))
+        #expect(
+            try Filters.tojson([value], kwargs: ["separators": .null, "sort_keys": .null], env: env)
+                == .string(#"{"a":2,"b":1}"#)
+        )
+        #expect(
+            try Filters.tojson(
+                [value],
+                kwargs: ["separators": [", ", ": "], "sort_keys": false],
+                env: env
+            ) == .string(#"{"b": 1, "a": 2}"#)
+        )
+    }
+
+    @Test("tojson filter propagates custom serializer errors")
+    func tojsonFilterCustomError() throws {
+        let environment = Environment()
+        environment.policies.jsonSerializer = .custom { _, _ in
+            throw JinjaError.runtime("custom serializer failed")
+        }
+        do {
+            _ = try Filters.tojson([1], env: environment)
+            Issue.record("Expected custom serializer to throw")
+        } catch JinjaError.runtime(let message) {
+            #expect(message == "custom serializer failed")
+        }
+    }
+
+    @Test("JSON policy presets apply when rendering templates")
+    func tojsonPolicyPresets() throws {
+        let environment = Environment()
+        let template = try Template("{{ value | tojson }}")
+        let context: Context = ["value": ["z": "—</script>&'", "a": 1]]
+        let plain = #"{"z": "—</script>&'", "a": 1}"#
+        #expect(try template.render(context, environment: environment) == plain)
+        environment.policies = .jinja2
+        #expect(
+            try template.render(context, environment: environment)
+                == #"{"a": 1, "z": "\u2014\u003c/script\u003e\u0026\u0027"}"#
+        )
+        environment.policies = .transformers
+        #expect(try template.render(context, environment: environment) == plain)
+    }
+
+    @Test("JSON policy presets reject missing template values but serialize null")
+    func tojsonPolicyPresetsRejectUndefined() throws {
+        let policies: [Environment.Policies] = [.transformers, .jinja2]
+        for policy in policies {
+            let environment = Environment()
+            environment.policies = policy
+            for source in [
+                "{{ missing | tojson }}",
+                "{{ [missing] | tojson }}",
+                "{{ {'key': missing} | tojson }}",
+            ] {
+                let template = try Template(source)
+                #expect(throws: JinjaError.self) {
+                    try template.render([:], environment: environment)
+                }
+            }
+            #expect(try Template("{{ none | tojson }}").render([:], environment: environment) == "null")
+        }
+    }
+
+    @Test("Child JSON policy overrides retain inherited settings and isolate mutations")
+    func tojsonPolicyInheritance() throws {
+        let parent = Environment()
+        let child = Environment(parent: parent)
+        parent.policies = .jinja2
+        let template = try Template("{{ value | tojson }}")
+        let context: Context = ["value": ["z": "—<", "a": 1]]
+        #expect(
+            try template.render(context, environment: child)
+                == #"{"a": 1, "z": "\u2014\u003c"}"#
+        )
+        child.policies.jsonDumpsOptions.ensureASCII = false
+        #expect(parent.policies.jsonDumpsOptions.ensureASCII)
+        parent.policies = .transformers
+        #expect(
+            try template.render(context, environment: child)
+                == #"{"a": 1, "z": "—\u003c"}"#
+        )
+        #expect(
+            try template.render(context, environment: parent)
+                == #"{"z": "—<", "a": 1}"#
+        )
+    }
+
+    @Test("tojson filter does not escape slashes")
+    func tojsonFilterDoesNotEscapeSlashes() throws {
+        let result = try Filters.tojson([.string("</style> a/b")], kwargs: [:], env: env)
+        #expect(result == .string("\"</style> a/b\""))
+    }
+
+    @Test("tojson filter does not escape slashes when pretty printed")
+    func tojsonFilterDoesNotEscapeSlashesWhenPrettyPrinted() throws {
+        let result = try Filters.tojson(
+            [.object(["path": .string("a/b")])],
+            kwargs: ["indent": .int(2)],
+            env: env
+        )
+        #expect(result == .string("{\n  \"path\": \"a/b\"\n}"))
+    }
+
+    @Test("tojson filter preserves object key order")
+    func tojsonFilterPreservesObjectKeyOrder() throws {
         let tool = Value.object([
             "type": .string("function"),
             "function": .object([
@@ -516,23 +897,17 @@ struct FiltersTests {
         #expect(
             result
                 == .string(
-                    "{\"function\":{\"description\":\"Returns the current temperature in degrees Fahrenheit for the provided USA state\",\"name\":\"state_weather\",\"parameters\":{\"properties\":{\"state\":{\"description\":\"The 2 digit code for the USA state. Example: \\\"CA\\\" for California.\",\"type\":\"string\"}},\"required\":[\"state\"],\"type\":\"object\"}},\"type\":\"function\"}"
+                    "{\"type\": \"function\", \"function\": {\"parameters\": {\"type\": \"object\", \"required\": [\"state\"], \"properties\": {\"state\": {\"type\": \"string\", \"description\": \"The 2 digit code for the USA state. Example: \\\"CA\\\" for California.\"}}}, \"name\": \"state_weather\", \"description\": \"Returns the current temperature in degrees Fahrenheit for the provided USA state\"}}"
                 )
         )
     }
 
-    @Test("tojson filter escapes non-ASCII by default")
-    func tojsonFilterEscapesNonASCIIByDefault() throws {
-        // Chinese characters "你好" should be escaped as \uXXXX by default
+    @Test("tojson filter keeps non-ASCII by default")
+    func tojsonFilterKeepsNonASCIIByDefault() throws {
+        // The default Transformers policy sets ensureASCII to false,
+        // as transformers does, so "你好" is written as is.
         let result = try Filters.tojson([.string("你好")], kwargs: [:], env: env)
-        if case .string(let str) = result {
-            #expect(str.contains("\\u4f60"))  // 你
-            #expect(str.contains("\\u597d"))  // 好
-            #expect(!str.contains("你"))
-            #expect(!str.contains("好"))
-        } else {
-            Issue.record("Expected string result")
-        }
+        #expect(result == .string("\"你好\""))
     }
 
     @Test("tojson filter with ensure_ascii=true")
@@ -665,18 +1040,14 @@ struct FiltersTests {
 
     // MARK: - Error/Edge Case Coverage
 
-    @Test("upper filter with non-string throws")
+    @Test("upper filter coerces a non-string (like Jinja2) rather than throwing")
     func upperFilterNonString() throws {
-        #expect(throws: JinjaError.self) {
-            try Filters.upper([.int(42)], kwargs: [:], env: env)
-        }
+        #expect(try Filters.upper([.int(42)], kwargs: [:], env: env) == .string("42"))
     }
 
-    @Test("lower filter with non-string throws")
+    @Test("lower filter coerces a non-string (like Jinja2) rather than throwing")
     func lowerFilterNonString() throws {
-        #expect(throws: JinjaError.self) {
-            try Filters.lower([.int(42)], kwargs: [:], env: env)
-        }
+        #expect(try Filters.lower([.int(42)], kwargs: [:], env: env) == .string("42"))
     }
 
     @Test("length filter for objects")
@@ -699,11 +1070,12 @@ struct FiltersTests {
         }
     }
 
-    @Test("join filter with non-string separator throws")
+    @Test("join filter coerces a non-string separator (like Jinja2) rather than throwing")
     func joinFilterNonStringSeparator() throws {
-        #expect(throws: JinjaError.self) {
-            try Filters.join([.array([.int(1)]), .int(42)], kwargs: [:], env: env)
-        }
+        #expect(
+            try Filters.join([.array([.int(1), .int(2)]), .int(42)], kwargs: [:], env: env)
+                == .string("1422")
+        )
     }
 
     @Test("default filter with boolean mode")
@@ -714,6 +1086,49 @@ struct FiltersTests {
             env: env
         )
         #expect(result == .string("fallback"))
+    }
+
+    // Expected values match Jinja2 3.1.6, which returns the default
+    // for any input where `not value` is true.
+    @Test(
+        "default filter with boolean mode returns the default for falsy input",
+        arguments: [
+            Value.boolean(false), .string(""), .int(0), .double(0.0), .double(-0.0),
+            .null, .array([]), .object([:]),
+        ]
+    )
+    func defaultFilterBooleanModeFalsy(input: Value) throws {
+        let result = try Filters.default(
+            [input, .string("fallback"), .boolean(true)],
+            kwargs: [:],
+            env: env
+        )
+        #expect(result == .string("fallback"))
+    }
+
+    @Test(
+        "default filter with boolean mode keeps truthy input",
+        arguments: [
+            Value.boolean(true), .string(" "), .string("x"), .int(1), .int(-1), .double(0.5),
+            .array([.int(0)]), .array([.null]), .object(["a": .int(0)]),
+        ]
+    )
+    func defaultFilterBooleanModeTruthy(input: Value) throws {
+        let result = try Filters.default(
+            [input, .string("fallback"), .boolean(true)],
+            kwargs: [:],
+            env: env
+        )
+        #expect(result == input)
+    }
+
+    @Test(
+        "default filter without boolean mode keeps falsy input",
+        arguments: [Value.boolean(false), .string(""), .int(0), .null, .array([]), .object([:])]
+    )
+    func defaultFilterWithoutBooleanModeKeepsFalsy(input: Value) throws {
+        let result = try Filters.default([input, .string("fallback")], kwargs: [:], env: env)
+        #expect(result == input)
     }
 
     @Test("first filter with no args")
@@ -921,6 +1336,37 @@ struct FiltersTests {
             return
         }
         #expect(slices.count == 2)
+    }
+
+    // Expected strings were rendered with jinja2 3.1.6,
+    // which puts consecutive items in each slice,
+    // gives the first slices one extra item each,
+    // and adds `fill_with` only to the other slices, and only when it isn't none.
+    @Test(
+        "slice filter distributes and fills like Jinja2",
+        arguments: [
+            ("{{ ['x']|slice(3)|list }}", "[['x'], [], []]"),
+            ("{{ []|slice(2)|list }}", "[[], []]"),
+            ("{{ []|slice(2, '')|list }}", "[[''], ['']]"),
+            ("{{ [1, 2]|slice(4, false)|list }}", "[[1], [2], [False], [False]]"),
+            ("{{ [1, 2, 3]|slice(2)|list }}", "[[1, 2], [3]]"),
+            ("{{ [1, 2, 3]|slice(2, 'x')|list }}", "[[1, 2], [3, 'x']]"),
+            ("{{ [1, 2, 3, 4]|slice(2, 'x')|list }}", "[[1, 2, 'x'], [3, 4, 'x']]"),
+            ("{{ [1, 2, 3, 4]|slice(3, none)|list }}", "[[1, 2], [3], [4]]"),
+            ("{{ [1, 2, 3, 4, 5, 6, 7]|slice(3)|list }}", "[[1, 2, 3], [4, 5], [6, 7]]"),
+            ("{{ [1, 2, 3, 4, 5, 6, 7]|slice(5, 0)|list }}", "[[1, 2], [3, 4], [5, 0], [6, 0], [7, 0]]"),
+        ]
+    )
+    func sliceFilterMatchesJinja2(template: String, expected: String) throws {
+        #expect(try Template(template).render([:]) == expected)
+    }
+
+    @Test("slice filter with zero slices throws")
+    func sliceFilterZeroSlices() throws {
+        // Jinja2 raises ZeroDivisionError.
+        #expect(throws: JinjaError.self) {
+            try Template("{{ [1, 2, 3]|slice(0)|list }}").render([:])
+        }
     }
 
     @Test("map filter with non-array")
@@ -1311,10 +1757,10 @@ struct FiltersTests {
         #expect(result == .string(""))
     }
 
-    @Test("trim filter with non-string")
+    @Test("trim filter coerces a non-string (like Jinja2) rather than emptying")
     func trimFilterNonString() throws {
         let result = try Filters.trim([.int(42)], kwargs: [:], env: env)
-        #expect(result == .string(""))
+        #expect(result == .string("42"))
     }
 
     @Test("tojson filter with no args")
@@ -1323,11 +1769,12 @@ struct FiltersTests {
         #expect(result == .string("null"))
     }
 
-    @Test("tojson filter with function falls back to null")
+    @Test("tojson filter rejects a function, like json.dumps")
     func tojsonFilterFunction() throws {
         let fn = Value.function { _, _, _ in .null }
-        let result = try Filters.tojson([fn], kwargs: [:], env: env)
-        #expect(result == .string("null"))
+        #expect(throws: JinjaError.self) {
+            try Filters.tojson([fn], kwargs: [:], env: env)
+        }
     }
 
     @Test("abs filter with no args")
@@ -1343,16 +1790,16 @@ struct FiltersTests {
         }
     }
 
-    @Test("capitalize filter with non-string")
+    @Test("capitalize filter coerces a non-string (like Jinja2) rather than emptying")
     func capitalizeFilterNonString() throws {
         let result = try Filters.capitalize([.int(42)], kwargs: [:], env: env)
-        #expect(result == .string(""))
+        #expect(result == .string("42"))
     }
 
-    @Test("center filter with non-string returns input")
+    @Test("center filter coerces a non-string (like Jinja2) rather than returning input")
     func centerFilterNonString() throws {
-        let result = try Filters.center([.int(42), .int(10)], kwargs: [:], env: env)
-        #expect(result == .int(42))
+        let result = try Filters.center([.int(42), .int(6)], kwargs: [:], env: env)
+        #expect(result == .string("  42  "))
     }
 
     @Test("center filter missing width throws")
@@ -1573,22 +2020,22 @@ struct FiltersTests {
         #expect(result == .double(2.5))
     }
 
-    @Test("title filter with non-string")
+    @Test("title filter coerces a non-string (like Jinja2) rather than emptying")
     func titleFilterNonString() throws {
         let result = try Filters.title([.int(42)], kwargs: [:], env: env)
-        #expect(result == .string(""))
+        #expect(result == .string("42"))
     }
 
-    @Test("wordcount filter with non-string")
+    @Test("wordcount filter coerces a non-string (like Jinja2) rather than returning zero")
     func wordcountFilterNonString() throws {
         let result = try Filters.wordcount([.int(42)], kwargs: [:], env: env)
-        #expect(result == .int(0))
+        #expect(result == .int(1))
     }
 
-    @Test("replace filter with non-string returns input")
+    @Test("replace filter coerces a non-string (like Jinja2) rather than returning input")
     func replaceFilterNonString() throws {
-        let result = try Filters.replace([.int(42), .string("a"), .string("b")], kwargs: [:], env: env)
-        #expect(result == .int(42))
+        let result = try Filters.replace([.int(42), .string("4"), .string("x")], kwargs: [:], env: env)
+        #expect(result == .string("x2"))
     }
 
     @Test("replace filter with empty old string")
