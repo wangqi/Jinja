@@ -679,7 +679,9 @@ struct Parser: Sendable {
             advance()
             return .identifier(String(token.value))
         // Handle context-specific keywords that can be used as identifiers in expressions
-        case .if, .for, .in, .and, .or, .not, .is, .else, .set, .break, .continue:
+        // Jinja2 accepts block keywords such as `call` as variable names (Metis template: `for call in ...`) // wangqi modified 2026-11-13
+        case .if, .for, .in, .and, .or, .not, .is, .else, .set, .break, .continue,
+            .call, .filter, .macro, .generation:
             advance()
             return .identifier(String(token.value))
         case .multiply:
@@ -828,8 +830,10 @@ struct Parser: Sendable {
 // MARK: -
 
 extension Token.Kind {
+    // Jinja2 accepts block keywords such as `call` as identifiers and attribute names // wangqi modified 2026-11-13
     fileprivate static let allowedAsIdentifier: Set<Token.Kind> = [
         .identifier, .if, .for, .in, .and, .or, .not, .is, .else, .set, .break, .continue,
+        .call, .filter, .macro, .generation,
     ]
 
     fileprivate static let primaryExpressionStarters: Set<Token.Kind> = [
