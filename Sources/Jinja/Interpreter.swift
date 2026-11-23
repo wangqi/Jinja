@@ -326,6 +326,17 @@ enum Interpreter {
                 return try evaluateBinaryValues(op, leftValue, rightValue)
             }
 
+        case let .comparison(first, comparisons):
+            var left = try evaluateExpression(first, env: env)
+            var result = Value.boolean(true)
+            for comparison in comparisons {
+                let right = try evaluateExpression(comparison.operand, env: env)
+                result = try evaluateBinaryValues(comparison.op, left, right)
+                if !result.isTruthy { break }
+                left = right
+            }
+            return result
+
         case let .ternary(value, test, alternate):
             let testValue = try evaluateExpression(test, env: env)
             if testValue.isTruthy {
@@ -430,6 +441,7 @@ enum Interpreter {
             case let .array(values):
                 items = values
             case let .object(dict):
+                try Namespace.requireMapping(dict)
                 // Keys for a single loop variable,
                 // and `[key, value]` pairs for tuple unpacking (`for k, v in d`),
                 // where Jinja2 would unpack each key instead.
@@ -666,31 +678,32 @@ enum Interpreter {
                 try assign(target: expr, value: val, env: env)
             }
         case .member(let objectExpr, let propertyExpr, let computed):
-            // Handle property assignment like ns.foo = 'bar'
             let objectValue = try evaluateExpression(objectExpr, env: env)
-
+            let key: ObjectKey
             if computed {
                 let propertyValue = try evaluateExpression(propertyExpr, env: env)
-                guard let key = ObjectKey(propertyValue) else {
+                guard let propertyKey = ObjectKey(propertyValue) else {
                     throw JinjaError.runtime("Computed property key must be a string or integer")
                 }
-                if case var .object(dict) = objectValue {
-                    dict[key] = value
-                    // Update the object in the environment
-                    if case let .identifier(name) = objectExpr {
-                        env.setInChain(name: name, value: .object(dict))
-                    }
-                }
+                key = propertyKey
             } else {
                 guard case let .identifier(propertyName) = propertyExpr else {
                     throw JinjaError.runtime("Property assignment requires identifier")
                 }
-                if case var .object(dict) = objectValue {
-                    dict[.string(propertyName)] = value
-                    // Update the object in the environment
-                    if case let .identifier(name) = objectExpr {
-                        env.setInChain(name: name, value: .object(dict))
-                    }
+                key = .string(propertyName)
+            }
+
+            if case var .object(dict) = objectValue {
+                let updated: Value
+                if var namespace = Namespace.get(dict) {
+                    namespace.attributes[key] = value
+                    updated = namespace.value
+                } else {
+                    dict[key] = value
+                    updated = .object(dict)
+                }
+                if case let .identifier(name) = objectExpr {
+                    env.setInChain(name: name, value: updated)
                 }
             }
         default:
@@ -836,7 +849,8 @@ enum Interpreter {
     }
 
     static func evaluateComputedMember(_ object: Value, _ property: Value) throws -> Value {
-        switch (object, property) {
+        // Python indexes with `True` and `False` as the integers 1 and 0.
+        switch (object, property.booleanAsInt) {
         case let (.array(arr), .int(index)):
             let safeIndex = index < 0 ? arr.count + index : index
             guard safeIndex >= 0 && safeIndex < arr.count else {
@@ -845,10 +859,10 @@ enum Interpreter {
             return arr[safeIndex]
 
         case let (.object(obj), .string(key)):
-            return obj[.string(key)] ?? .undefined
+            return (Namespace.get(obj)?.attributes ?? obj)[.string(key)] ?? .undefined
 
         case let (.object(obj), .int(key)):
-            return obj[.int(key)] ?? .undefined
+            return (Namespace.get(obj)?.attributes ?? obj)[.int(key)] ?? .undefined
 
         case let (.string(str), .int(index)):
             let safeIndex = index < 0 ? str.count + index : index
@@ -1039,6 +1053,8 @@ enum Interpreter {
             return readsLaterItems(operand)
         case let .binary(_, left, right):
             return readsLaterItems(left) || readsLaterItems(right)
+        case let .comparison(first, comparisons):
+            return readsLaterItems(first) || comparisons.contains { readsLaterItems($0.operand) }
         case let .ternary(value, test, alternate):
             return readsLaterItems(value) || readsLaterItems(test)
                 || alternate.map(readsLaterItems) == true

@@ -147,6 +147,13 @@ public enum Value: Sendable {
         return false
     }
 
+    /// This value with a Boolean replaced by 0 or 1,
+    /// because Python's `bool` is a subclass of `int`.
+    var booleanAsInt: Value {
+        if case let .boolean(value) = self { return .int(value ? 1 : 0) }
+        return self
+    }
+
     /// Returns `true` if this value is an integer.
     public var isInt: Bool {
         if case .int = self { return true }
@@ -191,6 +198,7 @@ public enum Value: Sendable {
 
     /// Returns `true` if this value can be iterated over (array, object, or string).
     public var isIterable: Bool {
+        if namespace != nil { return false }
         switch self {
         case .array, .object, .string: return true
         default: return false
@@ -422,6 +430,10 @@ public enum Value: Sendable {
             return a < val ? -1 : a > val ? 1 : 0
         case let (.string(a), .string(b)):
             return a < b ? -1 : a > b ? 1 : 0
+        case (.boolean, .boolean), (.boolean, .int), (.boolean, .double),
+            (.int, .boolean), (.double, .boolean):
+            // Python orders booleans as the integers 0 and 1.
+            return try booleanAsInt.compare(to: other.booleanAsInt)
         default:
             throw JinjaError.runtime(
                 "Cannot compare values of different types (\(self) and \(other))"
@@ -440,12 +452,13 @@ public enum Value: Sendable {
         case .null:
             return false
         case let .array(items):
-            return items.contains { self == $0 }
+            return items.contains { self == $0 || self.isEquivalent(to: $0) }
         case let .string(str):
             guard case let .string(substr) = self else { return false }
             guard !substr.isEmpty else { return true }  // '' in 'abc' -> true
             return str.contains(substr)
         case let .object(dict):
+            try Namespace.requireMapping(dict)
             guard let key = ObjectKey(self) else { return false }
             return dict.keys.contains(key)
 
@@ -458,9 +471,9 @@ public enum Value: Sendable {
 
     /// Checks if the current value is equivalent to another value.
     ///
-    /// This is similar to `==`, but provides special handling for numeric types,
-    /// allowing an `Int` and a `Double` to be considered equivalent if they represent
-    /// the same number.
+    /// This is similar to `==`, but compares numbers as Python does:
+    /// an `Int` and a `Double` are equivalent if they represent the same number,
+    /// and `true` and `false` are equivalent to 1 and 0.
     ///
     /// - Parameters:
     ///   - other: The value to compare for equivalence.
@@ -472,13 +485,18 @@ public enum Value: Sendable {
         case let (.double(a), .double(b)):
             return a == b
         case let (.int(a), .double(b)):
-            return Double(a) == b
+            return Int(exactly: b) == a
         case let (.double(a), .int(b)):
-            return a == Double(b)
+            return Int(exactly: a) == b
         case let (.string(a), .string(b)):
             return a == b
         case let (.boolean(a), .boolean(b)):
             return a == b
+        // Python's `bool` is a subclass of `int`, so `True == 1` and `False == 0.0`.
+        case let (.boolean(a), .int(b)), let (.int(b), .boolean(a)):
+            return (a ? 1 : 0) == b
+        case let (.boolean(a), .double(b)), let (.double(b), .boolean(a)):
+            return (a ? 1.0 : 0.0) == b
         case (.null, .null):
             return true
         case (.undefined, .undefined):
@@ -487,6 +505,8 @@ public enum Value: Sendable {
             guard a.count == b.count else { return false }
             return zip(a, b).allSatisfy { $0.isEquivalent(to: $1) }
         case let (.object(a), .object(b)):
+            if let namespace = Namespace.get(a) { return namespace == Namespace.get(b) }
+            if Namespace.get(b) != nil { return false }
             guard a.count == b.count else { return false }
             for ((keyA, valueA), (keyB, valueB)) in zip(a, b) {
                 if keyA != keyB || !valueA.isEquivalent(to: valueB) {
@@ -541,6 +561,9 @@ extension Value: CustomStringConvertible {
         case .array(let a):
             return "[\(a.map(\.pythonRepr).joined(separator: ", "))]"
         case .object(let o):
+            if let namespace = Namespace.get(o) {
+                return "<Namespace \(Value.object(namespace.attributes).pythonRepr)>"
+            }
             return "{\(o.map { "\(Value($0.key).pythonRepr): \($0.value.pythonRepr)" }.joined(separator: ", "))}"
         case .function: return description
         case .macro(let m): return "<Macro \(m.name.pythonRepr)>"
@@ -622,7 +645,10 @@ extension Value: Equatable {
         case (.null, .null): return true
         case (.undefined, .undefined): return true
         case let (.array(lhs), .array(rhs)): return lhs == rhs
-        case let (.object(lhs), .object(rhs)): return lhs == rhs
+        case let (.object(lhs), .object(rhs)):
+            if let namespace = Namespace.get(lhs) { return namespace == Namespace.get(rhs) }
+            if Namespace.get(rhs) != nil { return false }
+            return lhs == rhs
         case (.function, .function): return false
         case let (.macro(lhs), .macro(rhs)): return lhs == rhs
         default: return false
@@ -643,7 +669,12 @@ extension Value: Hashable {
         case .null: hasher.combine(0)
         case .undefined: hasher.combine(0)
         case let .array(value): hasher.combine(value)
-        case let .object(value): hasher.combine(value)
+        case let .object(value):
+            if let namespace = Namespace.get(value) {
+                hasher.combine(namespace)
+            } else {
+                hasher.combine(value)
+            }
         case .function: hasher.combine(0)
         case .macro(let m): hasher.combine(m)
         }
@@ -656,6 +687,7 @@ extension Value: Encodable {
     public func encode(to encoder: Encoder) throws {
         switch self {
         case let .object(value):
+            try Namespace.requireMapping(value)
             var keyedContainer = encoder.container(keyedBy: ObjectKey.self)
             var seenStringValues: Set<String> = []
             for key in value.keys.sorted() {
@@ -828,7 +860,10 @@ public enum ObjectKey: Hashable, Sendable {
 
     /// Creates an object key from a runtime value.
     ///
-    /// - Parameter value: A string or integer value to use as a key.
+    /// A Boolean becomes the integer key 0 or 1,
+    /// because Python's `True` and `1` are the same dictionary key.
+    ///
+    /// - Parameter value: A string, integer, or Boolean value to use as a key.
     /// - Returns: The corresponding key, or `nil` if the value is not a valid key type.
     public init?(_ value: Value) {
         switch value {
@@ -836,6 +871,8 @@ public enum ObjectKey: Hashable, Sendable {
             self = .string(string)
         case let .int(int):
             self = .int(int)
+        case let .boolean(boolean):
+            self = .int(boolean ? 1 : 0)
         default:
             return nil
         }

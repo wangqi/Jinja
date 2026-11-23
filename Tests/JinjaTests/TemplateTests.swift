@@ -4,6 +4,139 @@ import Testing
 
 @Suite("Template Tests")
 struct TemplateTests {
+    @Test("Fuzz cases for striptags and indent match Jinja2")
+    func striptagsAndIndentFuzzCases() throws {
+        let striptags = try Template(#"{{- "<b>&amp;</b>"|striptags }}"#).render([:])
+        #expect(striptags == "&")
+        let indent = try Template("{{ bos_token|indent(4, first=true, blank=false) -}}x")
+            .render(["bos_token": ""])
+        #expect(indent == "    x")
+    }
+
+    @Test("Booleans are the dictionary keys and indices 0 and 1")
+    func booleanKeys() throws {
+        let result = try Template(
+            "{{ true in {1: 'a'} }}|{{ false in {0: 'a'} }}|{{ true is in({1: 'a'}) }}|{{ 2 in {1: 'a'} }}|{{ {1: 'a'}[true] }}|{{ {0: 'a'}[false] }}|{{ {1: 'a'}.get(true) }}|{{ {'1': 'a'}[true] }}|{{ [10, 20][true] }}|{{ 'ab'[true] }}"
+        ).render([:])
+        #expect(result == "True|True|True|False|a|a|a||20|b")
+    }
+
+    @Test("Chained comparisons compare adjacent operands")
+    func chainedComparisons() throws {
+        let result = try Template(
+            "{{ 1 < 2 < 3 }}|{{ 3 > 2 > 1 }}|{{ 1 < 2 == true }}|{{ 1 < 3 > 2 }}|{{ 2 > 1 < 0 }}|{{ 1 == 1 in [1] }}|{{ 'x' == 'a,b'.split(',') != 100.0 }}"
+        ).render([:])
+        #expect(result == "True|True|False|True|False|True|False")
+    }
+
+    @Test("Chained comparisons stop at the first false comparison")
+    func chainedComparisonShortCircuit() throws {
+        let result = try Template(
+            "{% for k in {'': ''} if '' == 'a' in 0 %}{{ k }}{% endfor %}done"
+        ).render([:])
+        #expect(result == "done")
+    }
+
+    @Test("Chained comparisons evaluate each operand once")
+    func chainedComparisonEvaluatesOnce() throws {
+        let result = try Template(
+            "{% set c = cycler(1, 2, 3) %}{{ 0 < c.next() < 2 }}|{{ c.next() }}"
+        ).render([:])
+        #expect(result == "True|2")
+    }
+
+    @Test("Numeric filters treat booleans as 0 and 1")
+    func booleanNumericFilters() throws {
+        let result = try Template(
+            "{{ true|float }}|{{ true|abs }}|{{ [true, true, 1]|sum }}|{{ [true, 2]|max }}|{{ [false, 0.5]|min }}|{{ [true, 0, 2]|sort }}|{{ true|filesizeformat }}|{{ false < 1 }}"
+        ).render([:])
+        #expect(result == "1.0|1|3|2|False|[0, True, 2]|1 Byte|True")
+    }
+
+    @Test("Booleans equal the numbers 0 and 1")
+    func booleanNumericEquality() throws {
+        let result = try Template(
+            "{{ 0 == false }}|{{ 1 != true }}|{{ 1.0 == true }}|{{ 0 is ne(false) }}|{{ 2 == true }}|{{ true in [1] }}|{{ [1, 0] == [true, false] }}"
+        ).render([:])
+        #expect(result == "True|False|True|False|False|True|True")
+    }
+
+    @Test("Booleans are numbers but not integers")
+    func booleanNumberTest() throws {
+        let result = try Template(
+            "{{ (1 > 0) is number }}|{{ true is integer }}|{{ [true, 1, \"a\"]|select(\"number\")|list }}"
+        ).render([:])
+        #expect(result == "True|False|[True, 1]")
+    }
+
+    @Test("Undefined values are callable")
+    func undefinedCallable() throws {
+        let result = try Template(
+            "{{ missing is callable }}|{{ ''.name is callable }}|{{ none is callable }}"
+        ).render([:])
+        #expect(result == "True|True|False")
+    }
+
+    @Test("Integer filter truncates floating-point strings")
+    func floatStringIntegerFilter() throws {
+        let result = try Template("{{ [10, '3.5'|int, 10, 10]|sum }}").render([:])
+        #expect(result == "33")
+    }
+
+    @Test("Integer filter rejects signed hexadecimal floats")
+    func signedHexadecimalIntegerFilter() throws {
+        let result = try Template("{{ '-0x1p2'|int(7) }}|{{ '+0x1p2'|int(7) }}|{{ '1_0.5'|int(7) }}").render([:])
+        #expect(result == "7|7|10")
+    }
+
+    @Test("Integer filter keeps zero-width spaces, which Python doesn't strip")
+    func zeroWidthSpaceIntegerFilter() throws {
+        let result = try Template("{{ v|int(7) }}|{{ w|int(7) }}")
+            .render(["v": "\u{200B}2.5\u{200B}", "w": "\u{200B}2"])
+        #expect(result == "7|7")
+    }
+
+    @Test("Membership preserves shared array storage")
+    func aliasedArrayMembership() throws {
+        let function = try Template("{% set a = [range] %}{{ a in [a] }}").render([:])
+        #expect(function == "True")
+        let nan = try Template("{% set a = [n] %}{{ a in [a] }}")
+            .render(["n": .double(.nan)])
+        #expect(nan == "True")
+    }
+
+    @Test("Integer filter converts booleans directly and through map")
+    func booleanIntegerFilter() throws {
+        let result = try Template(
+            "{{ true|int }}|{{ false|int }}|{{ true|int(7) }}|{{ false|int(7) }}|{{ [true, false]|map(\"int\")|list }}"
+        ).render([:])
+        #expect(result == "1|0|1|0|[1, 0]")
+    }
+
+    @Test("Membership compares integer and floating-point values")
+    func numericMembership() throws {
+        let result = try Template(
+            "{{ 0 in values }}|{{ 0 not in values }}|{{ 1.0 in [1] }}|{{ [0] in [[0.0]] }}"
+        ).render(["values": [-0.0]])
+        #expect(result == "True|False|True|True")
+    }
+
+    @Test("Numeric membership preserves large integer precision")
+    func largeIntegerMembership() throws {
+        let result = try Template(
+            "{{ 9007199254740993 in [9007199254740992.0] }}|{{ 9007199254740992.0 in [9007199254740993] }}"
+        ).render([:])
+        #expect(result == "False|False")
+    }
+
+    @Test("Dictionaries and undefined values are sequences")
+    func dictionarySequence() throws {
+        let result = try Template(
+            "{{ {} is sequence }}|{{ {} is not sequence }}|{{ missing is sequence }}|{{ 0 is sequence }}"
+        ).render([:])
+        #expect(result == "True|False|True|False")
+    }
+
     @Test("Empty template")
     func emptyTemplate() throws {
         let string = ""
@@ -1476,7 +1609,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|True|False|True|False|True|False|")
+        #expect(rendered == "|True|True|True|True|True|False|")
     }
 
     @Test("Membership negation with not")
@@ -1489,7 +1622,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|False|True|False|True|False|True|")
+        #expect(rendered == "|False|False|False|False|False|True|")
     }
 
     @Test("Membership negation with not in")
@@ -1523,7 +1656,7 @@ struct TemplateTests {
 
         // Check result of template
         let rendered = try Template(string).render(context)
-        #expect(rendered == "|False|True|False|True|False|True|")
+        #expect(rendered == "|False|False|False|False|False|True|")
     }
 
     @Test("Membership with undefined")

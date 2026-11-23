@@ -151,7 +151,7 @@ def _(case, jr, sr, cls):
     return cls == "b" and "Cannot concatenate values of different types" in SE(sr) and "~" in T(case)
 
 
-@rule("bool-arith", "booleans are not numbers in arithmetic and ordering (`true + 1`, `false < 1`)", "harness:operators")
+@rule("bool-arith", "booleans are not numbers in arithmetic (`true + 1`)", "harness:operators")
 def _(case, jr, sr, cls):
     return cls == "b" and re.search(r"Cannot (add|subtract|multiply|divide|compare|floor|apply|negate)[^(]*\((.* and )?(True|False)( and .*)?\)", SE(sr)) is not None
 
@@ -329,13 +329,6 @@ def _(case, jr, sr, cls):
     return cls == "a" and "|truncate" in T(case)
 
 
-@rule("list-of-dict", "list(dict) gives values instead of keys", "harness:filters")
-def _(case, jr, sr, cls):
-    if cls == "b":
-        return re.search(r"(\bdict\([^()]*\)|\}|\bd1)\|list\b", T(case)) is not None
-    return cls == "a" and "|list" in T(case) and re.match(r"\[['\"]", JO(jr) or "") is not None
-
-
 @rule("markup-concat", "escape (and tojson in the default environment) return Markup, and Markup + str escapes the str", "accepted artifact")
 def _(case, jr, sr, cls):
     pat = r"\|(tojson|e|escape|forceescape|safe)\b" if case["mode"] == "default" else r"\|(e|escape|forceescape|safe)\b"
@@ -362,41 +355,25 @@ def _(case, jr, sr, cls):
     return cls == "b" and re.search(r"Cannot multiply values of these types \(\[", SE(sr)) is not None
 
 
-@rule("in-undefined", "`in` with an undefined operand raises (selectattr(attr, 'in', [...]) on a missing attribute)", "new (minor)")
+@rule("in-undefined", "the 'in' test with an undefined operand raises (selectattr(attr, 'in', [...]) on a missing attribute)", "new (minor)")
 def _(case, jr, sr, cls):
-    return cls == "b" and re.search(r"Cannot compare values of different types \((.* and )?\)", SE(sr)) is not None
+    return cls == "b" and re.search(r"Cannot compare values of different types \((.* and )?\)", SE(sr)) is not None and re.search(r"is\s+(?:not\s+)?in\b|[\'\"]in[\'\"]", T(case)) is not None
 
 
-@rule("undefined-tests", "tests on undefined differ (`missing is iterable`)", "new (minor)")
+@rule("undefined-tests", "undefined values are not iterable in swift-jinja", "new (minor)")
 def _(case, jr, sr, cls):
-    return cls == "a" and {JO(jr).strip(), SO(sr).strip()} == {"True", "False"} and re.search(r"is (not )?(iterable|sequence|callable)", T(case)) is not None
-
-
-@rule("chained-compare", "chained comparisons (a < b < c, a <= b != c)", "harness:operators")
-def _(case, jr, sr, cls):
-    return re.search(r"(<|>|==|!=|<=|>=|\bin\b)[^()]*(<|>|==|!=|<=|>=|\bnot in\b)", T(case).replace("{{", "").replace("}}", "")) is not None and cls in ("a", "b")
-
-
-@rule("bool-eq-zero", "a comparison result compared with 0 or 1 (False == 0 is true in Python)", "harness:operators")
-def _(case, jr, sr, cls):
-    return cls == "a" and re.search(r"==\s*\(*\s*[01]\b|\b[01]\s*==|!=\s*[01]\b", T(case)) is not None
+    if cls != "a":
+        return False
+    test = re.search(r"is (not )?iterable\b", T(case))
+    if test is None:
+        return False
+    expected = ("False", "True") if test[1] else ("True", "False")
+    return (JO(jr).strip(), SO(sr).strip()) == expected
 
 
 @rule("bigint-div", "int / int converts to Double before dividing (precision for ints above 2**53)", "new (minor)")
 def _(case, jr, sr, cls):
     return cls == "a" and "/" in T(case) and any(isinstance(v, int) and not isinstance(v, bool) and abs(v) > 2 ** 53 for v in case["context"].values())
-
-
-@rule("is-sequence", "`is sequence` is false for dicts (and undefined)", "harness:operators")
-def _(case, jr, sr, cls):
-    return cls == "a" and "is sequence" in T(case)
-
-
-@rule("bool-number", "booleans are not numbers in ==, in, |int, |float, |sum, `is number`, select('number')", "harness:operators")
-def _(case, jr, sr, cls):
-    blob = T(case) + json.dumps(case["context"])
-    has_bool = re.search(r"\b(true|false|True|False|b1|add_generation_prompt|found)\b", blob) is not None
-    return cls == "a" and has_bool and re.search(r"[=!]=|\bin\b|is (not )?(ne|eq|equalto|number|integer|gt|lt|ge|le)|\|(int|float|sum|max|min|abs|filesizeformat)|'number'|\+|-", T(case)) is not None
 
 
 @rule("tojson-positional", "a positional tojson argument is ensure_ascii in transformers' tojson but indent in swift-jinja", "new")
@@ -409,15 +386,10 @@ def _(case, jr, sr, cls):
     return cls == "b" and "primary expression: closeParen" in SE(sr) and ",)" in T(case)
 
 
-@rule("unicode-linebreaks", "Python splitlines() treats U+2028, U+2029, U+0085, \\v, \\f, \\x1c-\\x1e as line breaks (indent, wordwrap)", "new (minor)")
+@rule("unicode-linebreaks", "Python splitlines() treats U+2028, U+2029, U+0085, \\v, \\f, \\x1c-\\x1e as line breaks (wordwrap)", "new (minor)")
 def _(case, jr, sr, cls):
     blob = T(case) + json.dumps(case["context"], ensure_ascii=False)
     return cls == "a" and re.search("[\u2028\u2029\x85\x0b\x0c\x1c\x1d\x1e]", blob) is not None
-
-
-@rule("filesize-singular", "filesizeformat says '1 Bytes' for 1.0 (Jinja2: '1 Byte')", "new (minor)")
-def _(case, jr, sr, cls):
-    return cls == "a" and "|filesizeformat" in T(case)
 
 
 @rule("markup-tests", "`x|escape is escaped` (Markup objects)", "accepted artifact")
@@ -440,9 +412,9 @@ def _(case, jr, sr, cls):
     return cls in ("a", "b", "c") and re.search(r"\|(center|indent|truncate|wordwrap|batch|slice)\((-|0\b)", T(case)) is not None
 
 
-@rule("in-mixed-types", "`in` (and the 'in' test) raises when the container holds values of other types (`2 in ['a', 2]`)", "new")
+@rule("in-mixed-types", "the 'in' test raises when the container holds values of other types (`2 is in(['a', 2])`)", "new")
 def _(case, jr, sr, cls):
-    return cls == "b" and "Cannot compare values of different types" in SE(sr) and re.search(r"\bin\b", T(case)) is not None
+    return cls == "b" and "Cannot compare values of different types" in SE(sr) and re.search(r"is\s+(?:not\s+)?in\b|[\'\"]in[\'\"]", T(case)) is not None
 
 
 @rule("dict-kwargs-order", "dict() with keyword arguments sorts its keys instead of keeping call order", "new")
@@ -459,17 +431,6 @@ def _(case, jr, sr, cls):
 # Causes that the fuzzer found at the batch for 3.0.0 (#95, #96, #97, #98).
 # Each predates the batch.  Most change a value in a condition,
 # so swift-jinja takes another branch and fails in it (class "b").
-@rule("bool-number-branch", "`true is number` is false, so a condition takes another branch", "new (harness:operators has `true is number`)")
-def _(case, jr, sr, cls):
-    return cls in ("b", "c") and re.search(r"\b(?:true|false|True|False)\s+is\s+(?:not\s+)?(?:number|integer)\b", T(case)) is not None
-
-
-@rule("bool-eq-zero-branch", "a boolean compared with 0 or 1 (`0 != false`) differs from Python, so a condition takes another branch", "new (harness:operators)")
-def _(case, jr, sr, cls):
-    return cls in ("b", "c") and re.search(
-        r"\b[01]\s*[=!]=\s*(?:true|false|True|False)\b|\b(?:true|false|True|False)\s*[=!]=\s*[01]\b", T(case)) is not None
-
-
 @rule("undefined-iterable", "a missing attribute or item is not `iterable`; Jinja2's Undefined is iterable", "new (minor)")
 def _(case, jr, sr, cls):
     return cls in ("a", "b", "c") and re.search(r"(?:\.\w+|\])\s+is\s+(?:not\s+)?iterable\b", T(case)) is not None
@@ -493,3 +454,8 @@ def _(case, jr, sr, cls):
 @rule("sort-none", "sort raises when it compares none with none", "new (minor)")
 def _(case, jr, sr, cls):
     return cls == "b" and "sort" in T(case) and "Cannot compare values of different types (None and None)" in SE(sr)
+
+
+@rule("sort-undefined", "sort raises when it compares undefined values, which Jinja2 treats as equal", "new (previously hidden by list-of-dict)")
+def _(case, jr, sr, cls):
+    return cls == "b" and "Cannot compare values of different types ( and )" in SE(sr) and re.search(r"\|sort\b", T(case)) is not None

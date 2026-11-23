@@ -254,10 +254,18 @@ struct FiltersTests {
         #expect(result == .int(3))
     }
 
-    @Test("int filter with base and prefix")
+    @Test("int filter accepts a prefix only for its base or base 0")
     func intFilterWithBaseAndPrefix() throws {
+        // Python's `int("0x10", 10)` raises `ValueError`, so Jinja2 returns the default.
         let prefixed = try Filters.int([.string("0x10")], kwargs: [:], env: env)
-        #expect(prefixed == .int(16))
+        #expect(prefixed == .int(0))
+        let hexadecimal = try Filters.int([.string("0x10")], kwargs: ["base": .int(16)], env: env)
+        #expect(hexadecimal == .int(16))
+        let automatic = try Filters.int([.string("0x10")], kwargs: ["base": .int(0)], env: env)
+        #expect(automatic == .int(16))
+        // In base 16, "0b101" is a hexadecimal number, not a binary prefix.
+        let binaryDigits = try Filters.int([.string("0b101")], kwargs: ["base": .int(16)], env: env)
+        #expect(binaryDigits == .int(45313))
 
         let baseResult = try Filters.int(
             [.string("ff"), .int(0), .int(16)],
@@ -1589,6 +1597,54 @@ struct FiltersTests {
         #expect(result == .string(""))
     }
 
+    @Test("striptags filter decodes character references")
+    func striptagsFilterDecodesReferences() throws {
+        let cases: [(String, String)] = [
+            ("<b>&amp;</b>", "&"),
+            ("Main &raquo;\t<em>About</em>", "Main \u{BB} About"),
+            ("&lt;b&gt; &#60;&#x3C;&#X3c", "<b> <<<"),
+            ("&notit; &amp &ampx", "\u{AC}it; & &x"),
+            ("&#0;&#128;&#x110000;&#1;", "\u{FFFD}\u{20AC}\u{FFFD}"),
+            ("&#; &x; & x", "&#; &x; & x"),
+        ]
+        for (input, expected) in cases {
+            let result = try Filters.striptags([.string(input)], kwargs: [:], env: env)
+            #expect(result == .string(expected), "\(input)")
+        }
+    }
+
+    @Test("striptags filter removes comments and stops at an unclosed tag")
+    func striptagsFilterCommentsAndUnclosedTags() throws {
+        let cases: [(String, String)] = [
+            ("a <!-- x > y --> b", "a b"),
+            ("x<>y", "xy"),
+            ("<a>1</a> <b", "1 <b"),
+            ("a <!-- unclosed", "a <!-- unclosed"),
+            ("a\u{2028}b\u{1C}c\u{A0}d", "a b c d"),
+        ]
+        for (input, expected) in cases {
+            let result = try Filters.striptags([.string(input)], kwargs: [:], env: env)
+            #expect(result == .string(expected), "\(input)")
+        }
+    }
+
+    // MarkupSafe 3.0.4 looks for `-->` after `<!--`, and stops at a comment that isn't closed.
+    // MarkupSafe 3.0.3 instead removed "<!-- unclosed >" through the next `>`,
+    // and treated `<!-->` and `<!--->` as closed comments.
+    @Test("striptags filter matches MarkupSafe 3.0.4 for unclosed and empty comments")
+    func striptagsFilterMarkupSafeComments() throws {
+        let cases: [(String, String)] = [
+            ("a <!-- unclosed > b", "a <!-- unclosed > b"),
+            ("a <!--> b", "a <!--> b"),
+            ("a <!---> b", "a <!---> b"),
+            ("a <!--> b --> c", "a c"),
+        ]
+        for (input, expected) in cases {
+            let result = try Filters.striptags([.string(input)], kwargs: [:], env: env)
+            #expect(result == .string(expected), "\(input)")
+        }
+    }
+
     @Test("striptags filter with non-string")
     func striptagsFilterNonString() throws {
         let result = try Filters.striptags([.int(42)], kwargs: [:], env: env)
@@ -1839,10 +1895,36 @@ struct FiltersTests {
         #expect(result == .double(3.14))
     }
 
+    @Test("float filter accepts only Python float syntax")
+    func floatFilterPythonSyntax() throws {
+        let cases: [(String, Double)] = [
+            (" 12 ", 12), ("\u{3000}2.5\u{2028}", 2.5), ("1_0.5", 10.5), (".5", 0.5), ("5.", 5), ("1e3", 1000),
+            ("0x10", 7.5), ("0x1p2", 7.5), ("1__0", 7.5), ("\u{200B}1", 7.5),
+            ("\u{1C}1", 7.5), ("", 7.5), ("abc", 7.5),
+        ]
+        for (input, expected) in cases {
+            let result = try Filters.float([.string(input), .double(7.5)], kwargs: [:], env: env)
+            #expect(result == .double(expected), "\(input.debugDescription)")
+        }
+        let infinity = try Filters.float([.string("-Infinity")], kwargs: [:], env: env)
+        #expect(infinity == .double(-.infinity))
+        guard case let .double(nan) = try Filters.float([.string("+NaN")], kwargs: [:], env: env) else {
+            Issue.record("Expected a double")
+            return
+        }
+        #expect(nan.isNaN)
+    }
+
     @Test("float filter with non-convertible returns default")
     func floatFilterNonConvertible() throws {
-        let result = try Filters.float([.boolean(true)], kwargs: [:], env: env)
+        let result = try Filters.float([.null], kwargs: [:], env: env)
         #expect(result == .double(0.0))
+    }
+
+    @Test("float filter converts booleans to 1 and 0")
+    func floatFilterBoolean() throws {
+        #expect(try Filters.float([.boolean(true)], kwargs: [:], env: env) == .double(1.0))
+        #expect(try Filters.float([.boolean(false)], kwargs: [:], env: env) == .double(0.0))
     }
 
     @Test("int filter with no args")
@@ -1853,14 +1935,30 @@ struct FiltersTests {
 
     @Test("int filter with 0b prefix")
     func intFilterBinaryPrefix() throws {
-        let result = try Filters.int([.string("0b1010")], kwargs: [:], env: env)
-        #expect(result == .int(10))
+        #expect(try Filters.int([.string("0b1010")], kwargs: [:], env: env) == .int(0))
+        #expect(try Filters.int([.string("0b1010")], kwargs: ["base": .int(2)], env: env) == .int(10))
     }
 
     @Test("int filter with 0o prefix")
     func intFilterOctalPrefix() throws {
-        let result = try Filters.int([.string("0o17")], kwargs: [:], env: env)
-        #expect(result == .int(15))
+        #expect(try Filters.int([.string("0o17")], kwargs: [:], env: env) == .int(0))
+        #expect(try Filters.int([.string("0o17")], kwargs: ["base": .int(8)], env: env) == .int(15))
+    }
+
+    @Test("int filter follows Python's int(value, base)")
+    func intFilterPythonBase() throws {
+        let cases: [(String, Value, Int)] = [
+            ("0x_1f", .int(16), 31), ("0x__1", .int(16), 7), ("0x1_", .int(16), 7), ("0x", .int(16), 7),
+            ("-0x10", .int(0), -16), ("+0b1", .int(0), 1), ("010", .int(0), 10), ("0_0", .int(0), 0),
+            ("010", .int(10), 10), ("zz", .int(36), 1295), ("z", .int(35), 7),
+            // An invalid base or a base that isn't an integer falls back to `int(float(value))`.
+            ("12", .int(1), 12), ("12", .int(37), 12), ("12", .string("x"), 12), ("ff", .double(16), 7),
+            ("2.5", .int(16), 2), ("\u{3000}12\u{3000}", .int(10), 12),
+        ]
+        for (input, base, expected) in cases {
+            let result = try Filters.int([.string(input), .int(7), base], kwargs: [:], env: env)
+            #expect(result == .int(expected), "\(input.debugDescription) base \(base)")
+        }
     }
 
     @Test("int filter with invalid binary")
@@ -1881,16 +1979,49 @@ struct FiltersTests {
         #expect(result == .int(0))
     }
 
-    @Test("int filter with non-convertible returns default")
-    func intFilterNonConvertible() throws {
+    @Test("int filter converts true to one")
+    func intFilterBoolean() throws {
         let result = try Filters.int([.boolean(true)], kwargs: [:], env: env)
-        #expect(result == .int(0))
+        #expect(result == .int(1))
     }
 
     @Test("int filter int passthrough")
     func intFilterIntPassthrough() throws {
         let result = try Filters.int([.int(42)], kwargs: [:], env: env)
         #expect(result == .int(42))
+    }
+
+    @Test("int filter truncates float strings")
+    func intFilterFloatString() throws {
+        #expect(try Filters.int([.string("3.5")], kwargs: [:], env: env) == .int(3))
+        #expect(try Filters.int([.string(" -2.9 ")], kwargs: [:], env: env) == .int(-2))
+        #expect(try Filters.int([.string("1e3")], kwargs: [:], env: env) == .int(1000))
+        #expect(try Filters.int([.string("nan"), .int(7)], kwargs: [:], env: env) == .int(7))
+        #expect(try Filters.int([.string("inf"), .int(7)], kwargs: [:], env: env) == .int(7))
+    }
+
+    @Test("int filter accepts only Python float syntax")
+    func intFilterPythonFloatSyntax() throws {
+        let cases: [(String, Int)] = [
+            ("-0x1p2", 7), ("+0x1p2", 7), ("0x1p2", 7), ("1__0", 7), ("_1", 7), ("1_.5", 7), (".", 7), ("1e", 7),
+            ("1_0.5", 10), ("1e1_0", 10_000_000_000), (".5e1", 5), ("1.", 1), ("-2.5", -2), ("+2.5", 2),
+        ]
+        for (input, expected) in cases {
+            let result = try Filters.int([.string(input), .int(7)], kwargs: [:], env: env)
+            #expect(result == .int(expected), "\(input)")
+        }
+    }
+
+    @Test("int filter strips only Python whitespace")
+    func intFilterPythonWhitespace() throws {
+        let cases: [(String, Int)] = [
+            ("\u{200B}2.5\u{200B}", 7), ("\u{200B}2", 7), ("2\u{200B}", 7), ("\u{200B}0x10", 7),
+            (" 12 ", 12), ("\u{A0}12\u{3000}", 12), ("\u{1C}12\u{1F}", 7), ("\u{85}2.5\u{2028}", 2),
+        ]
+        for (input, expected) in cases {
+            let result = try Filters.int([.string(input), .int(7)], kwargs: [:], env: env)
+            #expect(result == .int(expected), "\(input.debugDescription)")
+        }
     }
 
     @Test("int filter non-parseable string returns default")
@@ -1918,7 +2049,13 @@ struct FiltersTests {
             Issue.record("Expected array")
             return
         }
-        #expect(values.count == 2)
+        #expect(values == [.string("a"), .string("b")])
+    }
+
+    @Test("Dictionary list filter preserves key types and order")
+    func dictionaryListKeys() throws {
+        let result = try Template("{{ {'a': 10, 2: 20}|list }}|{{ {}|list }}").render([:])
+        #expect(result == "['a', 2]|[]")
     }
 
     @Test("list filter with non-string/array/object")
@@ -2198,6 +2335,22 @@ struct FiltersTests {
             #expect(lines[1] == "  ")
         } else {
             Issue.record("Expected string result")
+        }
+    }
+
+    @Test("indent filter matches Jinja2 for empty strings and line endings")
+    func indentFilterEdgeCases() throws {
+        let cases: [(String, [String: Value], String)] = [
+            ("", ["first": .boolean(true)], "  "),
+            ("", ["first": .boolean(true), "blank": .boolean(true)], "  "),
+            ("\n", ["first": .boolean(true)], "  \n"),
+            ("a\n", ["blank": .boolean(true)], "a\n  "),
+            ("a\r\nb", [:], "a\n  b"),
+            ("a\u{2028}b", [:], "a\n  b"),
+        ]
+        for (input, kwargs, expected) in cases {
+            let result = try Filters.indent([.string(input), .int(2)], kwargs: kwargs, env: env)
+            #expect(result == .string(expected), "\(input.debugDescription) \(kwargs)")
         }
     }
 

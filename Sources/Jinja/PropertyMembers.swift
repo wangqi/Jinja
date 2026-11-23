@@ -18,6 +18,9 @@ enum PropertyMembers {
         case let .string(str):
             return try evaluateStringProperty(str, propertyName)
         case let .object(obj):
+            if let namespace = Namespace.get(obj) {
+                return namespace.attributes[.string(propertyName)] ?? .undefined
+            }
             return try evaluateObjectProperty(obj, propertyName)
         default:
             return .undefined
@@ -26,24 +29,63 @@ enum PropertyMembers {
 
     // MARK: - String Properties
 
+    private static func lowercaseMapping(_ scalars: [Unicode.Scalar], at index: Int) -> String {
+        let scalar = scalars[index]
+        guard scalar == "Σ" else { return scalar.properties.lowercaseMapping }
+
+        // Final sigma requires a preceding cased scalar and no following cased scalar.
+        // Ignore case-ignorable scalars in both directions, except private-use scalars.
+        func isCaseIgnorable(_ scalar: Unicode.Scalar) -> Bool {
+            scalar.properties.generalCategory != .privateUse && scalar.properties.isCaseIgnorable
+        }
+        let before = scalars[..<index].last { !isCaseIgnorable($0) }
+        let after = scalars[(index + 1)...].first { !isCaseIgnorable($0) }
+        return before?.properties.isCased == true && after?.properties.isCased != true ? "ς" : "σ"
+    }
+
+    /// Python's `str.capitalize`: title-cases the first scalar and lowercases the rest.
+    static func capitalize(_ str: String) -> String {
+        let scalars = Array(str.unicodeScalars)
+        guard let first = scalars.first else { return "" }
+        return first.properties.titlecaseMapping
+            + scalars.indices.dropFirst().map { lowercaseMapping(scalars, at: $0) }.joined()
+    }
+
     private static func evaluateStringProperty(_ str: String, _ propertyName: String) throws
         -> Value
     {
         switch propertyName {
+        case "capitalize":
+            return .function { args, kwargs, _ in
+                _ = try resolveCallArguments(args: args, kwargs: kwargs, parameters: [])
+                return .string(capitalize(str))
+            }
         case "upper":
             return .function { args, kwargs, _ in
                 _ = try resolveCallArguments(args: args, kwargs: kwargs, parameters: [])
-                return .string(str.uppercased())
+                return .string(str.unicodeScalars.map { $0.properties.uppercaseMapping }.joined())
             }
         case "lower":
             return .function { args, kwargs, _ in
                 _ = try resolveCallArguments(args: args, kwargs: kwargs, parameters: [])
-                return .string(str.lowercased())
+                let scalars = Array(str.unicodeScalars)
+                return .string(
+                    scalars.indices.map { lowercaseMapping(scalars, at: $0) }.joined()
+                )
             }
         case "title":
             return .function { args, kwargs, _ in
                 _ = try resolveCallArguments(args: args, kwargs: kwargs, parameters: [])
-                return .string(str.capitalized)
+                var result = ""
+                var previousIsCased = false
+                let scalars = Array(str.unicodeScalars)
+                for (index, scalar) in scalars.enumerated() {
+                    result +=
+                        previousIsCased
+                        ? lowercaseMapping(scalars, at: index) : scalar.properties.titlecaseMapping
+                    previousIsCased = scalar.properties.isCased
+                }
+                return .string(result)
             }
         case "strip":
             return .function { args, kwargs, _ in
@@ -237,6 +279,7 @@ enum PropertyMembers {
                 case let .string(string):
                     items = string.unicodeScalars.map { .string(String($0)) }
                 case let .object(object):
+                    try Namespace.requireMapping(object)
                     items = object.keys.map(Value.init)
                 case .undefined:
                     items = []

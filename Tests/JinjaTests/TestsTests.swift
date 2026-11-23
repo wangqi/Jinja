@@ -97,6 +97,12 @@ struct TestsTests {
         #expect(result == true)
     }
 
+    @Test("number test with Boolean value")
+    func numberWithBooleanValue() throws {
+        #expect(try Tests.number([.boolean(true)], kwargs: [:], env: env))
+        #expect(try Tests.number([.boolean(false)], kwargs: [:], env: env))
+    }
+
     @Test("number test with non-number value")
     func numberWithNonNumberValue() throws {
         let result = try Tests.number([.string("hello")], kwargs: [:], env: env)
@@ -553,7 +559,7 @@ struct TestsTests {
             kwargs: [:],
             env: env
         )
-        #expect(result == false)
+        #expect(result == true)
     }
 
     @Test("escaped test")
@@ -713,6 +719,12 @@ struct TestsTests {
         #expect(result == true)
     }
 
+    @Test("callable with undefined")
+    func callableWithUndefined() throws {
+        let result = try Tests.callable([.undefined], kwargs: [:], env: env)
+        #expect(result == true)
+    }
+
     @Test("callable with non-callable")
     func callableWithNonCallable() throws {
         let result = try Tests.callable([.int(42)], kwargs: [:], env: env)
@@ -837,6 +849,14 @@ struct TestsTests {
     func inUnsupportedContainer() throws {
         let result = try Tests.`in`([.string("a"), .int(42)], kwargs: [:], env: env)
         #expect(result == false)
+    }
+
+    @Test("sameas compares booleans and none by identity")
+    func sameasSingletons() throws {
+        #expect(try Tests.sameas([.boolean(false), .boolean(false)], kwargs: [:], env: env))
+        #expect(try Tests.sameas([.null, .null], kwargs: [:], env: env))
+        #expect(try !Tests.sameas([.int(1), .boolean(true)], kwargs: [:], env: env))
+        #expect(try !Tests.sameas([.int(0), .boolean(false)], kwargs: [:], env: env))
     }
 
     // MARK: - sameas with incomparable
