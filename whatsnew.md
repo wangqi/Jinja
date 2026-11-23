@@ -1,55 +1,118 @@
-# swift-jinja upgrade — 2026-11-01
+# swift-jinja: What's New (225f0f0 → 3.2.1 / 3104efd)
 
-`63cd1f7` (fork main) → upstream `a091d6a` (huggingface/swift-jinja main, 42 commits), merged as
-`8968c01` on `main`; upgrade branch `tag-20261101`.
+**Merged:** 2026-11-22 as `30fb903` on branch `tag-20261122` · **Upstream:** huggingface/swift-jinja main
+(11 commits, 2026-11-09..17, #104-#112, tag 3.2.1)
+**Integration docs:** `helper/docs/llamacpp_swift_toolcall.md`, `helper/docs/thirdparty_package_dependence.md`,
+`helper/scripts/model_regression/README.md` ("The chat template probe")
+**Consumers:** `thirdparty/llamacpp_swift/Sources/swift/ChatTemplate.swift` (every GGUF prompt),
+`thirdparty/swift-transformers` (`Hub/Config.swift` `jinjaValue()`, `Tokenizers/Tokenizer.swift`
+`applyChatTemplate` for MLX and Core AI), `testcases/engines/coreai/CoreAIToolCallFallbackTests.swift`
+(the only direct `import Jinja` in the app tree).
 
-## Why
+Eleven upstream commits, all Jinja2-conformance work driven by upstream's conformance oracle and fuzz
+job: Python Unicode casing, Python's bool-is-int semantics, a real `namespace` type, chained
+comparisons, Jinja2's `striptags` / `indent` / `int` / `float`, and the `str.capitalize()` method.
+No public symbol was added, renamed or removed, and `tojson`, `Value(any:)`, key order, `items`,
+`length`, `string`, `join`, `replace`, `default` and `trim` are unchanged, so nothing the app pins
+in its tests moves. No silent ship-blocker: every change makes a template render closer to what
+Hugging Face transformers renders. The merge was conflict-free and the fork's one patch survived.
 
-LFM3 1.7B and LFM3-VL 2B (GGUF) answered garbage in the app. Their chat template contains
-`{%- for tool in tools or [] -%}`, which the fork's parser rejected ("Expected '%}' after for loop..
-Got or instead"); `LLaMa.LLMTokenize` then sent the bare user text as the whole prompt. Upstream
-`0b67ecb` (#59, "Fix for-loop iterable to accept binary expressions") is the fix.
+---
 
-## Highlights (what reaches the app)
+## 1. Changes
 
-- For-loop iterables accept binary expressions (`for x in a or []`) — fixes LFM3 (#59).
-- Whitespace control moved into the lexer with Python's `str.isspace()` semantics, including on
-  comment tags; a single trailing newline is dropped by default, as Jinja2 does (#93, #76, #90).
-- `tojson` serializes like `json.dumps` (`separators`, `sort_keys`, no slash escaping) (#74, #85, #72).
-- Python-style printing of lists, dicts, booleans and none (#86, #87); `str.format` / `str.join` (#89).
-- Filters and tests bind tighter than binary operators (#96); loop filtering happens before loop
-  variables are computed (#92); `loop.previtem` / `loop.nextitem` (#58); integer attribute access and
-  integer object keys (#81, #67); `strip(chars)` (#65); `upper`/`lower` coerce to string (#69).
-- Errors instead of hangs or traps: unbounded macro recursion, integer overflow, huge integer
-  arguments (#91, #94, #83); configurable macro call depth (#102).
-- Rendering no longer mutates the environment (#98); linear-time string slicing (#101).
-- Jinja2 conformance tests and a weekly fuzz job upstream (#95).
+| Commit / PR | What changed | Reaches the app? |
+|---|---|---|
+| `f78d742` #104 | `upper` / `lower` / `title` use per-scalar Unicode mappings with Greek final sigma (Python `str` semantics) instead of Foundation `uppercased` / `capitalized` | Only templates calling these on non-ASCII or apostrophe text (`"don't".title()` is now `Don'T`, as Python) |
+| `aefa237` #105 | Numeric / sequence semantics: `is sequence` true for dicts and undefined; `\| list` on a dict returns **keys** (was values); `in` on arrays uses numeric equivalence; `filesizeformat`, `abs`, `sum` treat booleans as 0/1; `int`/`double` equivalence is exact | Possible, see R2 |
+| `6604242` #106 | `namespace()` is a distinct type (an `.object` holding an internal marker): attributes no longer collide with dict methods (`ns.items`), `is mapping` is false for a namespace, `tojson` / iteration / `length` / `in` on a namespace throw; prints `<Namespace {...}>`; equality by identity | Every template using `namespace(...)` (Qwen3, Llama 3.x, Gemma, GLM ...). Reads and `set ns.x = ...` behave as before |
+| `416b281` #107 | README for 3.0 | No |
+| `8569c23` #108 | Fuzz-found fixes: `is number` true for booleans; `is callable` true for undefined; `1 == true`, `0 == 0.0 == false` as Python; `sameas` keeps `true`/`false`/`none` as singletons; `int` filter truncates `"3.5"` | Possible, see R1 |
+| `4420cfb` #109 | Chained comparisons `a < b < c` (were parsed as `(a < b) < c` and threw); booleans as dict keys 0 / 1 (`ObjectKey(.boolean)` now `.int`) | Templates that used chains now render instead of failing |
+| `cc0ccae` #110 | `striptags` follows MarkupSafe (comments, unclosed tag, HTML entity decoding via new 2239-line `HTMLEntities.swift`); `indent` follows Jinja2 (trailing newline leaves an empty indented line, `blank` / `first` semantics) | Only templates using `indent` / `striptags`; binary grows by the entity table |
+| `4970e48` #111 | `int` / `float` filters parse strings as Python `int(value, base)` / `float()`: `"0x10" \| int` is now the default (was 16) unless `base=16` or `0`; `"3.5" \| int` is 3 | Only templates casting strings |
+| `fd43896`, `c15cb89` #112, `3104efd` | `str.capitalize()` method (SmolVLM-Instruct's `message['role'].capitalize()` failed with "Cannot call non-function value"); the `capitalize` filter shares it | A template using it now renders; no catalogue row needs it today |
 
-## API changes
+## 2. Public API
 
-- Lexer, parser, AST and interpreter are now `internal` (#97). Our consumers use only `Template` and
-  `Value` (`llamacpp_swift/ChatTemplate.swift`, `swift-transformers` Hub/Tokenizers, the Core AI tool
-  fallback): no consumer change.
-- `Package.swift` unchanged (swift-collections `from: 1.0.0`); no dependency move.
+| Symbol | Change | Our usage / fix |
+|---|---|---|
+| `Template`, `Template.render`, `Value`, `Value(any:)`, `Environment`, `Options` | Unchanged | `ChatTemplate.swift`, Tokenizers, `CoreAIToolCallFallbackTests`: no change |
+| `ObjectKey.init?(_ value: Value)` | Behaviour: `.boolean` now gives `.int(0/1)` instead of `nil` | Not called by our code |
+| `Tests.number`, `Tests.sequence`, `Tests.callable`, `Tests.mapping`, `Tests.sameas`, `Filters.list`, `Filters.int`, `Filters.float`, `Filters.indent`, `Filters.striptags` | Public static functions, same signatures, Jinja2 semantics (section 1) | Not called directly; reached only through templates |
+| `Globals.namespace` | Returns the marker object; `JSONEncoder` throws on a namespace | We never encode render-time values |
 
-## Conflict resolution and fork patches
+## 3. Conflicts and fork patches
 
-| Fork patch | Outcome |
+| File | Resolution |
 |---|---|
-| `Lexer.preprocess` start-of-string `{%-` / `{{-` order fix (2026-08-29) | **Absorbed** by upstream #93, which deleted `preprocess` and does whitespace control in the lexer. Conflict in `Sources/Jinja/Lexer.swift` resolved by taking upstream. |
-| `TemplateTests` leading-whitespace regression tests (2026-08-29) | **Kept**, rewritten render-only (upstream #100 changed token positions); `"{\n{%- if true %}X…"` now expects `"{X"`, Python Jinja2's output (the old `"{ X"` was the regex workaround's merge guard). |
+| (none) | Conflict-free merge (`30fb903`) |
 
-`wangqi modified` markers: 1 → 1 (`Tests/JinjaTests/TemplateTests.swift`). `swift test`: 957 tests in
-27 suites pass (756 in 13 before the merge).
+Patch inventory (`wangqi modified`, sources and tests): 4 at `225f0f0` → 4 at `tag-20261122`.
+- `Sources/Jinja/Parser.swift` (2 markers, lines 685 / 836): `call` / `filter` / `macro` / `generation`
+  accepted as identifiers and attribute names (Metis-1.6 `for call in message.tool_calls`). Survived
+  unchanged; still needed, upstream still rejects those keywords as names. #109 rewrote
+  `parseComparison` above it without touching the patched blocks.
+- `Tests/JinjaTests/KeywordIdentifierTests.swift` (the patch's tests) and
+  `Tests/JinjaTests/TemplateTests.swift` (2026-11-01 render-only rewrite): unchanged.
 
-## Risks
+## 4. Dependencies
 
-| Risk | Verify |
-|---|---|
-| Whitespace and `tojson` changes alter every GGUF prompt the app renders (blank lines, indentation, JSON spacing in tool blocks) | GGUF `--tool-call` and generate sweeps with `--compare` against the 2026-11-01 baselines; review fixture `prompt` diffs |
-| Swift-transformers (MLX / Core AI tokenizers) renders with the same package | `Flux2PromptEncoderTests` on the macOS test host; MLX sweeps when MLX next moves |
-| Trailing newline now dropped | `OCRChatTemplateTests`, `CoreAIToolCallFallbackTests` |
+No dependency move: `Package.swift` unchanged (swift-collections `from: 1.0.0`). swift-transformers
+still names the remote swift-jinja in its manifest; the local path package wins by identity.
 
-## Opportunities (not built)
+## 5. Risk assessment — 4 risks (0 high, 2 medium, 2 low)
 
-- Configurable macro call depth (#102) could cap pathological user-imported templates.
+### R1 — Bool / int equality and `is number` change branch choices on bool arguments (MEDIUM)
+**Problem:** `Value(any:)` turns a JSON `true` (NSNumber) into `.int(1)` (pinned in
+`CoreAIToolCallFallbackTests.testTheObjectFormsFourKnownDeltasOnQwenTemplates`). Templates comparing
+with `== true`, `in [true, ...]` or testing `is number` on booleans now take Python's branch. This is
+closer to transformers, but a rendered tool block may change. `llamacpp_swift.toJinjaValue` tests
+`as Bool` before `as Int` (its own converter, unchanged by this merge), so GGUF and Core AI paths
+differ in how a JSON bool arrives; both are exercised by the checks below.
+**Verify:** `cd testcases && ./run_tests.sh CoreAIToolCallFallbackTests`; GGUF
+`./run_model_tests.py --templates --scan-local` (helper/scripts/model_regression) against the
+2026-11-22 sweep (78 PASS, 5 WARN, 3 FAIL, 3 SKIP). **Status:** templates sweep running in P10.
+
+### R2 — `namespace` is a new internal type (MEDIUM)
+**Problem:** Qwen3 / Llama 3.x / GLM templates build `namespace(...)` and assign `ns.x` inside loops.
+Attribute reads and assignment keep their old semantics (copy plus `setInChain`), but any template
+that iterates, `tojson`s, or calls dict methods on a namespace now throws (Jinja2 raises too).
+**Verify:** the `--templates` sweep (every shipped GGUF template, every shape); GGUF `--tool-call`
+and generate sweeps with `--compare` against `baseline-toolcall-macos.log` / `baseline-generate-macos.log`
+(run-20261122). **Status:** P10.
+
+### R3 — `\| list` on a dict, `indent`, `int` / `float` string parsing (LOW)
+**Problem:** behaviour flips toward Jinja2 (`dict | list` keys not values; `indent` trailing newline;
+`"0x10" | int` → default). No shipped template known to depend on the old output.
+**Verify:** the `--templates` sweep; any WARN whose diff is in a tool or system block names it.
+**Status:** P10.
+
+### R4 — MLX / Core AI templates via swift-transformers (LOW)
+**Problem:** Tokenizers renders with `lstripBlocks` / `trimBlocks` through the same engine; the
+`--templates` probe is GGUF only.
+**Verify:** `./run_tests.sh CoreAIToolCallFallbackTests` (renders real Core AI Qwen3 / MiniCPM5
+fragments); MLX tool-call sweep on the macOS host when convenient (`--tool-call` MLX rows).
+**Status:** unit suite in P10; MLX sweep optional.
+
+## 6. New models
+
+None; a template engine.
+
+## 7. Opportunities (not built)
+
+| Upstream feature | Consumer that would use it | Value |
+|---|---|---|
+| `str.capitalize()` | `ChatTemplate.swift` / Tokenizers | SmolVLM-family GGUF / MLX rows become addable without a template rewrite |
+| Chained comparisons | `ChatTemplate.swift` | Templates with `0 < x < n` no longer fail at render and fall back to bare text |
+| Bool-as-int semantics | `llamacpp_swift.toJinjaValue` / Core AI fallback | Could drop the `Value(any:)` bool-as-1 delta workaround notes if `Value(any:)` ever orders `Bool` first upstream |
+
+## 8. Verification
+
+- `swift test` in the fork: 1010 tests in 29 suites pass (P3; 957 / 27 at the 2026-11-01 upgrade).
+- App suites to run (P10): `CoreAIToolCallFallbackTests`, `ChatTemplateKeyOrderTests`,
+  `OCRChatTemplateTests`. `ToolCallReplayTests` and `ToolCallParserTests` parse recorded output and
+  do not render templates.
+- GGUF `--templates` sweep (macOS, no model load) and GGUF `--tool-call` / generate sweeps with
+  `--compare` against the run-20261122 baselines: results recorded by P10.
+- Device: not needed; the engine is pure Swift with no platform code.
